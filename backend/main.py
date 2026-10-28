@@ -1,0 +1,329 @@
+
+from contextlib import asynccontextmanager
+from datetime import datetime
+import sqlite3
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+from database import (
+    initialize_database,
+    list_rooms,
+    get_connection,
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    initialize_database()
+    yield
+
+
+app = FastAPI(
+    title="SpaceSync AI API",
+    description="Campus room booking and availability backend",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+class BookingRequest(BaseModel):
+    room_id: int
+    title: str = Field(min_length=1, max_length=150)
+    start_time: datetime
+    end_time: datetime
+    booking_type: str = "event"
+
+
+class BookingStatusUpdate(BaseModel):
+    status: str
+
+
+def parse_booking_time(value: str) -> datetime:
+    return datetime.fromisoformat(value)
+
+
+def check_time_range(start_time: datetime, end_time: datetime):
+    if start_time.tzinfo != end_time.tzinfo:
+        raise HTTPException(
+            status_code=400,
+            detail="Start and end times must use the same timezone format.",
+        )
+
+    if end_time <= start_time:
+        raise HTTPException(
+            status_code=400,
+            detail="End time must be later than start time.",
+        )
+
+
+def find_conflict(connection, room_id, start_time, end_time, exclude_id=None):
+    query = """
+        SELECT id, title, start_time, end_time, status, booking_type
+        FROM bookings
+        WHERE room_id = ?
+          AND status IN ('pending', 'approved')
+          AND start_time < ?
+          AND end_time > ?
+    """
+    params = [room_id, end_time.isoformat(), start_time.isoformat()]
+
+    if exclude_id is not None:
+        query += " AND id != ?"
+        params.append(exclude_id)
+
+    return connection.execute(query, params).fetchone()
+
+
+def booking_to_dict(row):
+    return {
+        "id": row["id"],
+        "room_id": row["room_id"],
+        "title": row["title"],
+        "start_time": row["start_time"],
+        "end_time": row["end_time"],
+        "booking_type": row["booking_type"],
+        "status": row["status"],
+    }
+
+
+@app.get("/")
+def home():
+    return {
+        "message": "Welcome to SpaceSync AI",
+        "status": "running",
+    }
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy"}
+
+
+@app.get("/rooms")
+def get_rooms():
+    return list_rooms()
+
+
+@app.get("/bookings")
+def get_bookings():
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, room_id, title, start_time, end_time,
+                   booking_type, status
+            FROM bookings
+            ORDER BY start_time
+            """
+        ).fetchall()
+
+    return [booking_to_dict(row) for row in rows]
+
+
+@app.post("/bookings", status_code=201)
+def create_booking(booking: BookingRequest):
+    if booking.booking_type not in ("event", "exam"):
+        raise HTTPException(
+            status_code=400,
+            detail="booking_type must be 'event' or 'exam'.",
+        )
+
+    check_time_range(booking.start_time, booking.end_time)
+
+    try:
+        with get_connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            room = connection.execute(
+                "SELECT id FROM rooms WHERE id = ?",
+                (booking.room_id,),
+            ).fetchone()
+
+            if room is None:
+                raise HTTPException(status_code=404, detail="Room not found.")
+
+            conflict = find_conflict(
+                connection,
+                booking.room_id,
+                booking.start_time,
+                booking.end_time,
+            )
+
+            if conflict:
+                message = "Room is already reserved during that time."
+                if booking.booking_type == "exam":
+                    message += (
+                        " Exam priority requires an administrator to resolve "
+                        "the conflict; no existing booking was overwritten."
+                    )
+                raise HTTPException(status_code=409, detail=message)
+
+            cursor = connection.execute(
+                """
+                INSERT INTO bookings
+                    (room_id, title, start_time, end_time,
+                     booking_type, status)
+                VALUES (?, ?, ?, ?, ?, 'pending')
+                """,
+                (
+                    booking.room_id,
+                    booking.title.strip(),
+                    booking.start_time.isoformat(),
+                    booking.end_time.isoformat(),
+                    booking.booking_type,
+                ),
+            )
+
+            row = connection.execute(
+                """
+                SELECT id, room_id, title, start_time, end_time,
+                       booking_type, status
+                FROM bookings
+                WHERE id = ?
+                """,
+                (cursor.lastrowid,),
+            ).fetchone()
+
+            return booking_to_dict(row)
+
+    except sqlite3.Error as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Database error while creating booking.",
+        ) from error
+
+
+@app.patch("/bookings/{booking_id}/status")
+def update_booking_status(
+    booking_id: int,
+    update: BookingStatusUpdate,
+):
+    if update.status not in ("approved", "rejected"):
+        raise HTTPException(
+            status_code=400,
+            detail="Status must be 'approved' or 'rejected'.",
+        )
+
+    try:
+        with get_connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            booking = connection.execute(
+                "SELECT * FROM bookings WHERE id = ?",
+                (booking_id,),
+            ).fetchone()
+
+            if booking is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Booking not found.",
+                )
+
+            if booking["status"] != "pending":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Only pending bookings can be reviewed.",
+                )
+
+            if update.status == "approved":
+                conflict = find_conflict(
+                    connection,
+                    booking["room_id"],
+                    parse_booking_time(booking["start_time"]),
+                    parse_booking_time(booking["end_time"]),
+                    exclude_id=booking_id,
+                )
+
+                if conflict:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Cannot approve: another pending or approved booking overlaps.",
+                    )
+
+            connection.execute(
+                "UPDATE bookings SET status = ? WHERE id = ?",
+                (update.status, booking_id),
+            )
+
+            updated = connection.execute(
+                """
+                SELECT id, room_id, title, start_time, end_time,
+                       booking_type, status
+                FROM bookings WHERE id = ?
+                """,
+                (booking_id,),
+            ).fetchone()
+
+            return booking_to_dict(updated)
+
+    except sqlite3.Error as error:
+        raise HTTPException(
+            status_code=500,
+            detail="Database error while updating booking.",
+        ) from error
+
+
+@app.get("/availability")
+def check_availability(
+    start_time: datetime,
+    end_time: datetime,
+    min_capacity: int = 1,
+    equipment: str = "",
+):
+    check_time_range(start_time, end_time)
+
+    if min_capacity < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="min_capacity must be at least 1.",
+        )
+
+    required_equipment = {
+        item.strip().lower()
+        for item in equipment.split(",")
+        if item.strip()
+    }
+
+    with get_connection() as connection:
+        rooms = connection.execute(
+            """
+            SELECT id, name, capacity, equipment
+            FROM rooms
+            WHERE capacity >= ?
+            ORDER BY capacity, id
+            """,
+            (min_capacity,),
+        ).fetchall()
+
+        available_rooms = []
+
+        for room in rooms:
+            room_equipment = {
+                item.strip().lower()
+                for item in room["equipment"].split(",")
+                if item.strip()
+            }
+
+            if not required_equipment.issubset(room_equipment):
+                continue
+
+            conflict = find_conflict(
+                connection,
+                room["id"],
+                start_time,
+                end_time,
+            )
+
+            if conflict is None:
+                available_rooms.append({
+                    "id": room["id"],
+                    "name": room["name"],
+                    "capacity": room["capacity"],
+                    "equipment": sorted(room_equipment),
+                })
+
+    return {
+        "start_time": start_time.isoformat(),
+        "end_time": end_time.isoformat(),
+        "available_rooms": available_rooms,
+    }

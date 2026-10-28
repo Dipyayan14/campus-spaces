@@ -149,3 +149,7 @@ vite.config.ts.timestamp-*
 .turbo
 # Local database files
 *.db
+# Python backend
+__pycache__/
+*.py[cod]
+.venv/
