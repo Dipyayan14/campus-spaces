@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Login - Campus Spaces</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Plus+Jakarta+Sans:wght@600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "on-secondary-fixed": "#131b2e",
+            "secondary-fixed-dim": "#bec6e0",
+            "on-tertiary": "#ffffff",
+            "primary-fixed": "#e2dfff",
+            "inverse-primary": "#c3c0ff",
+            "on-secondary-fixed-variant": "#3f465c",
+            "secondary": "#565e74",
+            "surface-tint": "#4d44e3",
+            "on-background": "#0b1c30",
+            "surface-container-lowest": "#ffffff",
+            "surface-container-highest": "#d3e4fe",
+            "primary-fixed-dim": "#c3c0ff",
+            "on-error": "#ffffff",
+            "surface-dim": "#cbdbf5",
+            "on-surface": "#0b1c30",
+            "error": "#ba1a1a",
+            "primary-container": "#4f46e5",
+            "tertiary-fixed-dim": "#adc6ff",
+            "surface-container": "#e5eeff",
+            "surface-variant": "#d3e4fe",
+            "background": "#f8f9ff",
+            "on-primary-container": "#dad7ff",
+            "on-secondary-container": "#5c647a",
+            "on-surface-variant": "#464555",
+            "outline": "#777587",
+            "on-tertiary-fixed": "#001a42",
+            "on-tertiary-container": "#cedbff",
+            "error-container": "#ffdad6",
+            "on-primary": "#ffffff",
+            "inverse-surface": "#213145",
+            "secondary-container": "#dae2fd",
+            "surface-container-high": "#dce9ff",
+            "tertiary-fixed": "#d8e2ff",
+            "tertiary-container": "#005cc6",
+            "primary": "#3525cd",
+            "inverse-on-surface": "#eaf1ff",
+            "on-error-container": "#93000a",
+            "secondary-fixed": "#dae2fd",
+            "on-primary-fixed-variant": "#3323cc",
+            "on-secondary": "#ffffff",
+            "outline-variant": "#c7c4d8",
+            "tertiary": "#004598",
+            "surface-bright": "#f8f9ff",
+            "on-primary-fixed": "#0f0069",
+            "surface-container-low": "#eff4ff",
+            "surface": "#f8f9ff",
+            "on-tertiary-fixed-variant": "#004395"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          "spacing": {
+            "margin": "2rem",
+            "space-sm": "0.5rem",
+            "gutter-mobile": "1rem",
+            "space-xl": "2rem",
+            "space-md": "1rem",
+            "space-lg": "1.5rem",
+            "margin-mobile": "1rem",
+            "space-xs": "0.25rem",
+            "gutter": "1.5rem"
+          },
+          "fontFamily": {
+            "body-sm": ["Inter"],
+            "body-lg": ["Inter"],
+            "body-md": ["Inter"],
+            "label-md": ["Inter"],
+            "display-md": ["Plus Jakarta Sans"],
+            "headline-md": ["Plus Jakarta Sans"],
+            "headline-lg": ["Plus Jakarta Sans"],
+            "display-lg": ["Plus Jakarta Sans"],
+            "headline-sm": ["Plus Jakarta Sans"],
+            "label-lg": ["Inter"],
+            "label-sm": ["Inter"]
+          },
+          "fontSize": {
+            "body-sm": ["12px", { "lineHeight": "16px", "letterSpacing": "0", "fontWeight": "400" }],
+            "body-lg": ["16px", { "lineHeight": "24px", "letterSpacing": "0", "fontWeight": "400" }],
+            "body-md": ["14px", { "lineHeight": "20px", "letterSpacing": "0", "fontWeight": "400" }],
+            "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "600" }],
+            "display-md": ["32px", { "lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+            "headline-md": ["20px", { "lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+            "headline-lg": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+            "display-lg": ["40px", { "lineHeight": "48px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+            "headline-sm": ["16px", { "lineHeight": "24px", "letterSpacing": "0", "fontWeight": "600" }],
+            "label-lg": ["14px", { "lineHeight": "20px", "letterSpacing": "0.01em", "fontWeight": "600" }],
+            "label-sm": ["11px", { "lineHeight": "14px", "letterSpacing": "0.03em", "fontWeight": "600" }]
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-background text-on-surface min-h-screen flex flex-col font-body-md text-body-md antialiased selection:bg-primary-fixed selection:text-on-primary-fixed">
+<!-- Top Branding Bar -->
+<header class="bg-on-background dark:bg-on-surface h-[68px] w-full border-b border-outline-variant/20 flex items-center justify-between px-margin shadow-none z-20">
+<div class="max-w-[1440px] w-full mx-auto flex items-center justify-between">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-lg bg-primary-container flex items-center justify-center text-surface-container-lowest shadow-sm">
+<span class="material-symbols-outlined text-surface-container-lowest" data-icon="domain">domain</span>
+</div>
+<div>
+<span class="text-headline-md font-headline-md font-bold text-surface-container-lowest flex items-center gap-2">
+            Campus Spaces
+            <span class="text-label-sm font-label-sm px-2 py-0.5 rounded-full bg-surface-variant/20 text-inverse-primary border border-surface-variant/30 tracking-normal font-normal">v2.4</span>
+</span>
+</div>
+</div>
+<div class="flex items-center gap-4 text-surface-container-lowest">
+<a class="text-label-md font-label-md text-outline-variant hover:text-surface-container-lowest transition-colors flex items-center gap-1.5 py-1" href="#help">
+<span class="material-symbols-outlined text-outline-variant" data-icon="help_center">help_center</span>
+<span>Helpdesk</span>
+</a>
+<div class="h-4 w-px bg-outline-variant/30"></div>
+<div class="flex items-center gap-2 text-outline-variant text-label-sm font-label-sm">
+<span class="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
+<span>Network Operational</span>
+</div>
+</div>
+</div>
+</header>
+<!-- Main Canvas -->
+<main class="flex-1 flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 relative overflow-hidden bg-gradient-to-b from-surface to-surface-container-low">
+<!-- Ambient Structural Grid Details -->
+<div class="absolute inset-0 bg-[radial-gradient(#c7c4d8_1px,transparent_1px)] [background-size:24px_24px] opacity-30 pointer-events-none"></div>
+<div class="w-full max-w-lg relative z-10">
+<!-- Primary Authentication Card -->
+<div class="bg-surface-container-lowest rounded-2xl shadow-xl border border-outline-variant/30 p-8 sm:p-10 backdrop-blur-sm">
+<!-- Header & Branding -->
+<div class="text-center mb-8">
+<div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-secondary-container text-on-secondary-fixed text-label-sm font-label-sm border border-primary-fixed mb-4">
+<span class="material-symbols-outlined text-primary-container text-sm" data-icon="school">school</span>
+<span>University Facility Portal</span>
+</div>
+<h1 class="text-display-md font-display-md text-on-surface tracking-tight">Campus Spaces</h1>
+<p class="text-on-surface-variant text-body-md font-body-md mt-2 max-w-sm mx-auto">
+            Reserve halls, research labs, and smart classrooms effortlessly
+          </p>
+</div>
+<!-- Form Elements -->
+<form class="space-y-5" onsubmit="event.preventDefault();">
+<!-- Full Name -->
+<div>
+<label class="block text-label-md font-label-md text-on-surface mb-1.5" for="fullName">
+              Full Name
+            </label>
+<div class="relative">
+<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-outline">
+<span class="material-symbols-outlined text-outline" data-icon="person">person</span>
+</div>
+<input class="w-full pl-10 pr-3 py-2.5 bg-surface-container-lowest border border-outline-variant rounded-lg text-body-md font-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary-container/20 focus:border-primary-container transition-colors" id="fullName" name="fullName" placeholder="e.g. Dr. Sarah Mitchell" required="" type="text" value="Dr. Sarah Mitchell"/>
+</div>
+</div>
+<!-- Institutional Email -->
+<div>
+<label class="block text-label-md font-label-md text-on-surface mb-1.5" for="institutionalEmail">
+              Institutional Email / ID
+            </label>
+<div class="relative">
+<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-outline">
+<span class="material-symbols-outlined text-outline" data-icon="mail">mail</span>
+</div>
+<input class="w-full pl-10 pr-3 py-2.5 bg-surface-container-lowest border border-outline-variant rounded-lg text-body-md font-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary-container/20 focus:border-primary-container transition-colors" id="institutionalEmail" name="institutionalEmail" placeholder="id@institution.edu" required="" type="email" value="s.mitchell@university.edu"/>
+</div>
+</div>
+<!-- Role Selector -->
+<div>
+<label class="block text-label-md font-label-md text-on-surface mb-1.5" for="userRole">
+              Campus Role
+            </label>
+<div class="relative">
+<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-outline">
+<span class="material-symbols-outlined text-outline" data-icon="badge">badge</span>
+</div>
+<select class="w-full pl-10 pr-10 py-2.5 bg-surface-container-lowest border border-outline-variant rounded-lg text-body-md font-body-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container/20 focus:border-primary-container appearance-none transition-colors" id="userRole" name="userRole">
+<option value="Student">Student</option>
+<option value="Club Coordinator">Club Coordinator</option>
+<option selected="" value="Faculty">Faculty</option>
+<option value="Admin">Admin</option>
+<option value="Exam Cell">Exam Cell</option>
+</select>
+<div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-outline">
+<span class="material-symbols-outlined text-outline" data-icon="arrow_drop_down">arrow_drop_down</span>
+</div>
+</div>
+</div>
+<!-- Checkbox & Link -->
+<div class="flex items-center justify-between pt-1">
+<label class="flex items-center gap-2 cursor-pointer select-none">
+<input checked="" class="w-4 h-4 rounded text-primary-container border-outline-variant focus:ring-primary-container/30 focus:ring-offset-0" type="checkbox"/>
+<span class="text-body-sm font-body-sm text-on-surface-variant">Remember me on this workstation</span>
+</label>
+<a class="text-label-sm font-label-sm text-primary hover:underline" href="#sso">Institutional SSO?</a>
+</div>
+<!-- Primary Sign In Button -->
+<button class="w-full bg-primary-container hover:bg-primary text-surface-container-lowest font-label-lg text-label-lg py-3 px-4 rounded-lg shadow-sm active:scale-[0.99] transition-all flex items-center justify-center gap-2 cursor-pointer" type="submit">
+<span>Sign In</span>
+<span class="material-symbols-outlined text-surface-container-lowest text-base" data-icon="arrow_forward">arrow_forward</span>
+</button>
+</form>
+<!-- Divider -->
+<div class="relative my-8">
+<div class="absolute inset-0 flex items-center">
+<div class="w-full border-t border-outline-variant/40"></div>
+</div>
+<div class="relative flex justify-center text-label-sm font-label-sm">
+<span class="bg-surface-container-lowest px-3 text-on-surface-variant">Quick "Sign in as..." Test Persona</span>
+</div>
+</div>
+<!-- 1-Click Test Persona Buttons Grid -->
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+<!-- Persona: Student -->
+<button class="group p-2.5 rounded-lg border border-outline-variant/50 hover:border-primary-container/60 bg-surface-container-low/50 hover:bg-surface-container-low text-left transition-all flex items-start gap-2.5" onclick="setPersona('Alex Rivera', 'a.rivera@university.edu', 'Student')" type="button">
+<div class="w-7 h-7 rounded-md bg-secondary-container text-on-secondary-fixed flex items-center justify-center flex-shrink-0 mt-0.5">
+<span class="material-symbols-outlined text-sm" data-icon="local_library">local_library</span>
+</div>
+<div class="min-w-0">
+<div class="text-label-sm font-label-sm text-on-surface group-hover:text-primary transition-colors flex items-center justify-between">
+<span>Student</span>
+<span class="material-symbols-outlined text-xs opacity-0 group-hover:opacity-100 transition-opacity" data-icon="chevron_right">chevron_right</span>
+</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant truncate">Alex Rivera</div>
+<div class="text-[10px] text-outline truncate">Robotics Club</div>
+</div>
+</button>
+<!-- Persona: Club Coordinator -->
+<button class="group p-2.5 rounded-lg border border-outline-variant/50 hover:border-primary-container/60 bg-surface-container-low/50 hover:bg-surface-container-low text-left transition-all flex items-start gap-2.5" onclick="setPersona('Maya Chen', 'm.chen@university.edu', 'Club Coordinator')" type="button">
+<div class="w-7 h-7 rounded-md bg-secondary-container text-on-secondary-fixed flex items-center justify-center flex-shrink-0 mt-0.5">
+<span class="material-symbols-outlined text-sm" data-icon="groups">groups</span>
+</div>
+<div class="min-w-0">
+<div class="text-label-sm font-label-sm text-on-surface group-hover:text-primary transition-colors flex items-center justify-between">
+<span>Club Coordinator</span>
+<span class="material-symbols-outlined text-xs opacity-0 group-hover:opacity-100 transition-opacity" data-icon="chevron_right">chevron_right</span>
+</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant truncate">Maya Chen</div>
+<div class="text-[10px] text-outline truncate">Hackathon Lead</div>
+</div>
+</button>
+<!-- Persona: Faculty -->
+<button class="group p-2.5 rounded-lg border border-outline-variant/50 hover:border-primary-container/60 bg-surface-container-low/50 hover:bg-surface-container-low text-left transition-all flex items-start gap-2.5" onclick="setPersona('Prof. H. Vance', 'h.vance@university.edu', 'Faculty')" type="button">
+<div class="w-7 h-7 rounded-md bg-secondary-container text-on-secondary-fixed flex items-center justify-center flex-shrink-0 mt-0.5">
+<span class="material-symbols-outlined text-sm" data-icon="psychology">psychology</span>
+</div>
+<div class="min-w-0">
+<div class="text-label-sm font-label-sm text-on-surface group-hover:text-primary transition-colors flex items-center justify-between">
+<span>Faculty</span>
+<span class="material-symbols-outlined text-xs opacity-0 group-hover:opacity-100 transition-opacity" data-icon="chevron_right">chevron_right</span>
+</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant truncate">Prof. H. Vance</div>
+<div class="text-[10px] text-outline truncate">CS Dept</div>
+</div>
+</button>
+<!-- Persona: Admin -->
+<button class="group p-2.5 rounded-lg border border-outline-variant/50 hover:border-primary-container/60 bg-surface-container-low/50 hover:bg-surface-container-low text-left transition-all flex items-start gap-2.5" onclick="setPersona('Dean of Facilities', 'admin.facilities@university.edu', 'Admin')" type="button">
+<div class="w-7 h-7 rounded-md bg-secondary-container text-on-secondary-fixed flex items-center justify-center flex-shrink-0 mt-0.5">
+<span class="material-symbols-outlined text-sm" data-icon="admin_panel_settings">admin_panel_settings</span>
+</div>
+<div class="min-w-0">
+<div class="text-label-sm font-label-sm text-on-surface group-hover:text-primary transition-colors flex items-center justify-between">
+<span>Admin</span>
+<span class="material-symbols-outlined text-xs opacity-0 group-hover:opacity-100 transition-opacity" data-icon="chevron_right">chevron_right</span>
+</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant truncate">Dean of Facilities</div>
+<div class="text-[10px] text-outline truncate">Campus Ops</div>
+</div>
+</button>
+<!-- Persona: Exam Cell (Spanning or balanced) -->
+<button class="group p-2.5 rounded-lg border border-outline-variant/50 hover:border-primary-container/60 bg-surface-container-low/50 hover:bg-surface-container-low text-left transition-all flex items-start gap-2.5 sm:col-span-2" onclick="setPersona('Controller of Examinations', 'exam.cell@university.edu', 'Exam Cell')" type="button">
+<div class="w-7 h-7 rounded-md bg-secondary-container text-on-secondary-fixed flex items-center justify-center flex-shrink-0 mt-0.5">
+<span class="material-symbols-outlined text-sm" data-icon="assignment_turned_in">assignment_turned_in</span>
+</div>
+<div class="min-w-0 flex-1">
+<div class="text-label-sm font-label-sm text-on-surface group-hover:text-primary transition-colors flex items-center justify-between">
+<span>Exam Cell</span>
+<span class="material-symbols-outlined text-xs opacity-0 group-hover:opacity-100 transition-opacity" data-icon="chevron_right">chevron_right</span>
+</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant truncate">Controller of Examinations</div>
+<div class="text-[10px] text-outline truncate">Central Academic Auditing &amp; Scheduling</div>
+</div>
+</button>
+</div>
+</div>
+<!-- Campus Support Contact Footer Link -->
+<div class="text-center mt-6">
+<p class="text-body-sm font-body-sm text-on-surface-variant">
+          Need access or facing login trouble? 
+          <a class="text-primary hover:underline font-label-sm text-label-sm inline-flex items-center gap-1 ml-1" href="#support">
+<span>Contact Campus Facility Support</span>
+<span class="material-symbols-outlined text-xs" data-icon="open_in_new">open_in_new</span>
+</a>
+</p>
+</div>
+</div>
+</main>
+<!-- Standard Footer Anchor Component -->
+<footer class="bg-surface-container-low dark:bg-surface-container border-t border-outline-variant/30 py-space-lg px-margin">
+<div class="w-full flex flex-col md:flex-row justify-between items-center max-w-[1440px] mx-auto gap-space-md">
+<div class="flex items-center gap-2">
+<span class="text-headline-sm font-headline-sm font-bold text-on-surface">Campus Spaces</span>
+<span class="text-on-surface-variant text-body-sm font-body-sm hidden sm:inline">•</span>
+<span class="text-on-surface-variant text-body-sm font-body-sm">
+          © 2025 Campus Spaces. Higher Education Facility Planning &amp; Space Management.
+        </span>
+</div>
+<div class="flex items-center gap-6">
+<a class="text-on-surface-variant text-body-sm font-body-sm hover:text-primary dark:hover:text-inverse-primary transition-colors duration-150" href="#map">Campus Map</a>
+<a class="text-on-surface-variant text-body-sm font-body-sm hover:text-primary dark:hover:text-inverse-primary transition-colors duration-150" href="#policies">Facility Policies</a>
+<a class="text-on-surface-variant text-body-sm font-body-sm hover:text-primary dark:hover:text-inverse-primary transition-colors duration-150" href="#helpdesk">IT Helpdesk</a>
+<a class="text-on-surface-variant text-body-sm font-body-sm hover:text-primary dark:hover:text-inverse-primary transition-colors duration-150" href="#support">Support</a>
+</div>
+</div>
+</footer>
+<!-- Micro-interaction Script for Persona Switching -->
+<script>
+    function setPersona(name, email, role) {
+      document.getElementById('fullName').value = name;
+      document.getElementById('institutionalEmail').value = email;
+      document.getElementById('userRole').value = role;
+    }
+  </script>
+</body></html>
