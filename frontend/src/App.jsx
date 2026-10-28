@@ -12,6 +12,7 @@ import Login from "./pages/Login";
 import Calendar from "./pages/Calendar";
 import BookRoom from "./pages/BookRoom";
 import Approvals from "./pages/Approvals";
+import Insights from "./pages/Insights";
 
 /**
  * ProtectedLayout:
@@ -28,7 +29,7 @@ function ProtectedLayout() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col text-slate-800">
+    <div className="min-h-screen bg-[#F8F9FF] flex flex-col text-[#0B1C30]">
       <Navbar />
       <main className="flex-1">
         <Outlet />
@@ -39,7 +40,7 @@ function ProtectedLayout() {
 
 /**
  * RoleRoute:
- * Protects specific routes (like /approvals) by checking the user's role.
+ * Protects specific routes (like /approvals or /insights) by checking the user's role.
  * Unauthorized roles are redirected back to "/" with an error notice.
  */
 function RoleRoute({ allowedRoles, children }) {
@@ -73,6 +74,14 @@ export default function App() {
           element={
             <RoleRoute allowedRoles={["faculty", "admin"]}>
               <Approvals />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/insights"
+          element={
+            <RoleRoute allowedRoles={["admin", "exam_cell"]}>
+              <Insights />
             </RoleRoute>
           }
         />

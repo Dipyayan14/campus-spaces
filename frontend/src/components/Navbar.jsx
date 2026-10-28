@@ -18,6 +18,8 @@ export default function Navbar() {
 
   // Approvals tab is only visible to faculty and admin
   const canAccessApprovals = user?.role === "faculty" || user?.role === "admin";
+  // Insights tab is only visible to admin and exam_cell
+  const canAccessInsights = user?.role === "admin" || user?.role === "exam_cell";
 
   const getNavLinkClass = ({ isActive }) =>
     `pb-1 flex items-center gap-1.5 text-xs font-semibold transition-colors duration-150 ${
@@ -69,6 +71,15 @@ export default function Navbar() {
                   task_alt
                 </span>
                 <span>Approvals</span>
+              </NavLink>
+            )}
+
+            {canAccessInsights && (
+              <NavLink to="/insights" className={getNavLinkClass}>
+                <span className="material-symbols-outlined text-[17px]">
+                  analytics
+                </span>
+                <span>Insights</span>
               </NavLink>
             )}
           </nav>
@@ -193,6 +204,16 @@ export default function Navbar() {
               className={getMobileNavLinkClass}
             >
               Approvals
+            </NavLink>
+          )}
+
+          {canAccessInsights && (
+            <NavLink
+              to="/insights"
+              onClick={() => setMobileMenuOpen(false)}
+              className={getMobileNavLinkClass}
+            >
+              Insights
             </NavLink>
           )}
 
