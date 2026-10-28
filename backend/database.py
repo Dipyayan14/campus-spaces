@@ -36,9 +36,45 @@ def initialize_database():
                     CHECK (booking_type IN ('event', 'exam')),
                 status TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending', 'approved', 'rejected')),
+                submitted_at TEXT NOT NULL DEFAULT (
+                    strftime('%Y-%m-%dT%H:%M:%S', 'now')
+                ),
+                reminder_sent_at TEXT,
+                escalated_at TEXT,
                 FOREIGN KEY (room_id) REFERENCES rooms(id)
             )
         """)
+
+        # Migrate existing databases without deleting bookings
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(bookings)"
+            ).fetchall()
+        }
+
+        if "submitted_at" not in existing_columns:
+            connection.execute("""
+                ALTER TABLE bookings
+                ADD COLUMN submitted_at TEXT
+            """)
+            connection.execute("""
+                UPDATE bookings
+                SET submitted_at = strftime('%Y-%m-%dT%H:%M:%S', 'now')
+                WHERE submitted_at IS NULL
+            """)
+
+        if "reminder_sent_at" not in existing_columns:
+            connection.execute("""
+                ALTER TABLE bookings
+                ADD COLUMN reminder_sent_at TEXT
+            """)
+
+        if "escalated_at" not in existing_columns:
+            connection.execute("""
+                ALTER TABLE bookings
+                ADD COLUMN escalated_at TEXT
+            """)
 
         # Add sample rooms only if the rooms table is empty
         existing_rooms = connection.execute(
@@ -64,7 +100,11 @@ def initialize_database():
 def list_rooms():
     with get_connection() as connection:
         rows = connection.execute(
-            "SELECT id, name, capacity, equipment FROM rooms ORDER BY id"
+            """
+            SELECT id, name, capacity, equipment
+            FROM rooms
+            ORDER BY id
+            """
         ).fetchall()
 
     return [
