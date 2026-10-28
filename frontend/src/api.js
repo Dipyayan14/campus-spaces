@@ -2,7 +2,16 @@
 // Centralized API service layer. All data calls in pages must import from here.
 // In-memory state simulates backend behavior for the hackathon prototype.
 
-import { rooms as initialRooms, bookings as initialBookings, demoUsers } from "./mockData";
+import { rooms as initialRooms, bookings as initialBookings } from "./mockData";
+
+// Demo personas for quick login testing during presentations
+export const demoUsers = [
+  { id: "u1", name: "Rahul Sharma", role: "student" },
+  { id: "u2", name: "Coding Club Lead", role: "club" },
+  { id: "u3", name: "Prof. Ananya Sen", role: "faculty" },
+  { id: "u4", name: "Admin Operations", role: "admin" },
+  { id: "u5", name: "Exam Cell Officer", role: "exam_cell" },
+];
 
 // Priority map matching backend contract
 export const TYPE_PRIORITY = {
