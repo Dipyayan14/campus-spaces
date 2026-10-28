@@ -45,7 +45,7 @@ def initialize_database():
             )
         """)
 
-        # Migrate existing databases without deleting bookings
+        # Detect columns in an existing bookings table
         existing_columns = {
             row["name"]
             for row in connection.execute(
@@ -53,10 +53,10 @@ def initialize_database():
             ).fetchall()
         }
 
+        # Add missing workflow columns without deleting existing bookings
         if "submitted_at" not in existing_columns:
             connection.execute("""
-                ALTER TABLE bookings
-                ADD COLUMN submitted_at TEXT
+                ALTER TABLE bookings ADD COLUMN submitted_at TEXT
             """)
             connection.execute("""
                 UPDATE bookings
@@ -66,14 +66,12 @@ def initialize_database():
 
         if "reminder_sent_at" not in existing_columns:
             connection.execute("""
-                ALTER TABLE bookings
-                ADD COLUMN reminder_sent_at TEXT
+                ALTER TABLE bookings ADD COLUMN reminder_sent_at TEXT
             """)
 
         if "escalated_at" not in existing_columns:
             connection.execute("""
-                ALTER TABLE bookings
-                ADD COLUMN escalated_at TEXT
+                ALTER TABLE bookings ADD COLUMN escalated_at TEXT
             """)
 
         # Add sample rooms only if the rooms table is empty
@@ -99,13 +97,11 @@ def initialize_database():
 
 def list_rooms():
     with get_connection() as connection:
-        rows = connection.execute(
-            """
+        rows = connection.execute("""
             SELECT id, name, capacity, equipment
             FROM rooms
             ORDER BY id
-            """
-        ).fetchall()
+        """).fetchall()
 
     return [
         {
