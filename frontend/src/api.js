@@ -1,11 +1,17 @@
 const API_BASE = "http://127.0.0.1:8000";
 
+// Demo accounts used by the prototype.
+// Approval permissions are restricted separately in App.jsx and Navbar.jsx.
 export const demoUsers = [
   { id: "u1", name: "Rahul Sharma", role: "student" },
   { id: "u2", name: "Coding Club Lead", role: "club" },
   { id: "u3", name: "Prof. Ananya Sen", role: "faculty" },
-  { id: "u4", name: "Admin Operations", role: "admin" },
-  { id: "u5", name: "Exam Cell Officer", role: "exam_cell" },
+  { id: "u4", name: "Venue Admin", role: "venue_admin" },
+  { id: "u5", name: "Super Admin", role: "super_admin" },
+  { id: "u6", name: "Exam Cell Officer", role: "exam_cell" },
+
+  // Keep the legacy demo account for existing Insights functionality.
+  { id: "u7", name: "Admin Operations", role: "admin" },
 ];
 
 export const TYPE_PRIORITY = {
@@ -30,6 +36,7 @@ async function request(path, options = {}) {
   }
 
   if (response.status === 204) return null;
+
   return response.json();
 }
 
@@ -45,13 +52,14 @@ function mapBooking(booking) {
   return {
     ...booking,
     id: booking.id,
-    roomId: booking.room_id,
+    roomId: booking.room_id ?? booking.roomId,
     title: booking.title,
     type: booking.booking_type || booking.type || "event",
     start: booking.start_time || booking.start,
     end: booking.end_time || booking.end,
     status: booking.status,
-    requestedBy: booking.requested_by || booking.requestedBy || "Campus Member",
+    requestedBy:
+      booking.requested_by || booking.requestedBy || "Campus Member",
   };
 }
 
@@ -81,10 +89,13 @@ export async function createBooking(data) {
 }
 
 async function updateBookingStatus(id, status) {
-  const booking = await request(`/bookings/${encodeURIComponent(id)}/status`, {
-    method: "PATCH",
-    body: JSON.stringify({ status }),
-  });
+  const booking = await request(
+    `/bookings/${encodeURIComponent(id)}/status`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }
+  );
 
   return mapBooking(booking);
 }
@@ -97,7 +108,7 @@ export async function rejectBooking(id) {
   return updateBookingStatus(id, "rejected");
 }
 
-export async function deleteBooking(id) {
+export async function deleteBooking() {
   throw new Error(
     "Deleting bookings is not supported by the current backend API."
   );
@@ -111,6 +122,7 @@ export async function suggestRooms({
 } = {}) {
   if (!start || !end) {
     const rooms = await getRooms();
+
     return rooms.filter((room) => {
       if (Number(capacity) > 0 && room.capacity < Number(capacity)) {
         return false;
@@ -133,6 +145,7 @@ export async function suggestRooms({
   equipment.forEach((item) => params.append("equipment", item));
 
   const result = await request(`/availability?${params.toString()}`);
+
   const rooms = Array.isArray(result)
     ? result
     : result.available_rooms || result.rooms || [];
@@ -148,6 +161,7 @@ export async function loginUser(roleOrId) {
   if (user) return user;
 
   const role = String(roleOrId || "student");
+
   return {
     id: `u_${Date.now()}`,
     name: `${role.charAt(0).toUpperCase()}${role.slice(1)} User`,
