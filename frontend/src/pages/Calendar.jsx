@@ -86,7 +86,11 @@ export default function Calendar() {
 
   const { user } = useAuth();
   const now = useNow(30000);
-  const canAccessMaintenance = user?.role === "admin" || user?.role === "faculty";
+  const canAccessMaintenance =
+    user?.role === "faculty" ||
+    user?.role === "venue_admin" ||
+    user?.role === "super_admin" ||
+    user?.role === "admin";
 
   const calendarRef = useRef(null);
 

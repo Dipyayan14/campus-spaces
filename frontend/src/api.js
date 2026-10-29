@@ -7,13 +7,18 @@ import { generateInitialMaintenanceLogs } from "./mockData";
 const API_BASE = "http://127.0.0.1:8000";
 const MAINTENANCE_STORAGE_KEY = "campus_spaces_maintenance_v1";
 
-// Demo personas for quick login testing
+// Demo accounts used by the prototype.
+// Approval permissions are restricted separately in App.jsx and Navbar.jsx.
 export const demoUsers = [
   { id: "u1", name: "Rahul Sharma", role: "student" },
   { id: "u2", name: "Coding Club Lead", role: "club" },
   { id: "u3", name: "Prof. Ananya Sen", role: "faculty" },
-  { id: "u4", name: "Admin Operations", role: "admin" },
-  { id: "u5", name: "Exam Cell Officer", role: "exam_cell" },
+  { id: "u4", name: "Venue Admin", role: "venue_admin" },
+  { id: "u5", name: "Super Admin", role: "super_admin" },
+  { id: "u6", name: "Exam Cell Officer", role: "exam_cell" },
+
+  // Keep the legacy demo account for existing Insights functionality.
+  { id: "u7", name: "Admin Operations", role: "admin" },
 ];
 
 export const TYPE_PRIORITY = {
@@ -95,69 +100,74 @@ function loadMaintenanceFromStorage() {
     console.warn("Failed to read maintenance logs from localStorage:", err);
   }
 
-  // Reseed initial maintenance sample data
+  // Fallback to fresh seed data
   maintenanceLogList = generateInitialMaintenanceLogs();
   saveMaintenanceToStorage();
 }
 
-loadMaintenanceFromStorage();
-
-/**
- * Reset local demo maintenance data
- * TODO: connect to backend
- */
-export function resetDemoData() {
-  try {
-    localStorage.removeItem(MAINTENANCE_STORAGE_KEY);
-  } catch (err) {
-    console.warn("Failed to clear localStorage:", err);
-  }
-  maintenanceLogList = generateInitialMaintenanceLogs();
-  saveMaintenanceToStorage();
-  notifySubscribers();
+// Initialize immediately in browser context
+if (typeof window !== "undefined") {
+  loadMaintenanceFromStorage();
 }
 
 /**
- * Fetch all facility maintenance logs
- * TODO: connect to backend
+ * Retrieves the full list of campus facility maintenance issues.
+ * Returns a cloned array to prevent external mutations.
+ * TODO: connect to backend when maintenance endpoints are added
  */
 export async function getMaintenanceLogs() {
-  return [...maintenanceLogList];
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  if (maintenanceLogList.length === 0) {
+    loadMaintenanceFromStorage();
+  }
+  return JSON.parse(JSON.stringify(maintenanceLogList));
 }
 
 /**
- * Updates status of a maintenance log entry and records update timestamp.
- * TODO: connect to backend
+ * Updates the status of an existing maintenance log item.
+ * Valid statuses: "open" | "in_progress" | "resolved"
+ * Updates updatedAt timestamp, persists to localStorage, and alerts subscribers.
+ * TODO: connect to backend when maintenance endpoints are added
  */
-export async function updateMaintenanceStatus(id, status) {
-  let updatedLog = null;
-  const nowIso = new Date().toISOString();
+export async function updateMaintenanceStatus(id, newStatus) {
+  await new Promise((resolve) => setTimeout(resolve, 40));
 
-  maintenanceLogList = maintenanceLogList.map((item) => {
-    if (item.id === id) {
-      updatedLog = {
-        ...item,
-        status,
-        updatedAt: nowIso,
-      };
-      return updatedLog;
-    }
-    return item;
-  });
-
-  if (!updatedLog) {
-    throw new Error(`Maintenance record with ID "${id}" was not found.`);
+  const validStatuses = ["open", "in_progress", "resolved"];
+  if (!validStatuses.includes(newStatus)) {
+    throw new Error(`Invalid maintenance status: ${newStatus}`);
   }
 
+  const index = maintenanceLogList.findIndex((item) => String(item.id) === String(id));
+  if (index === -1) {
+    throw new Error(`Maintenance record with id ${id} was not found.`);
+  }
+
+  const updatedItem = {
+    ...maintenanceLogList[index],
+    status: newStatus,
+    updatedAt: new Date().toISOString(),
+  };
+
+  maintenanceLogList[index] = updatedItem;
   saveMaintenanceToStorage();
   notifySubscribers();
-  return updatedLog;
+
+  return JSON.parse(JSON.stringify(updatedItem));
+}
+
+/**
+ * Resets local demo maintenance logs back to default seed data.
+ * Useful for development and demo environments.
+ */
+export function resetDemoData() {
+  maintenanceLogList = generateInitialMaintenanceLogs();
+  saveMaintenanceToStorage();
+  notifySubscribers();
 }
 
 // ==========================================
-// Real Backend API Client (from main)
+// HTTP Client for FastAPI Backend
 // ==========================================
-
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -173,6 +183,7 @@ async function request(path, options = {}) {
   }
 
   if (response.status === 204) return null;
+
   return response.json();
 }
 
@@ -182,8 +193,8 @@ function mapRoom(room) {
     id: room.id,
     equipment: Array.isArray(room.equipment)
       ? room.equipment
-      : typeof room.equipment === "string"
-      ? room.equipment.split(",").map((s) => s.trim()).filter(Boolean)
+      : typeof room.equipment === "string" && room.equipment
+      ? room.equipment.split(",").map((s) => s.trim())
       : [],
   };
 }
@@ -192,13 +203,14 @@ function mapBooking(booking) {
   return {
     ...booking,
     id: booking.id,
-    roomId: booking.room_id,
+    roomId: booking.room_id ?? booking.roomId,
     title: booking.title,
     type: booking.booking_type || booking.type || "event",
     start: booking.start_time || booking.start,
     end: booking.end_time || booking.end,
     status: booking.status,
-    requestedBy: booking.requested_by || booking.requestedBy || "Campus Member",
+    requestedBy:
+      booking.requested_by || booking.requestedBy || "Campus Member",
   };
 }
 
@@ -229,10 +241,13 @@ export async function createBooking(data) {
 }
 
 async function updateBookingStatus(id, status) {
-  const booking = await request(`/bookings/${encodeURIComponent(id)}/status`, {
-    method: "PATCH",
-    body: JSON.stringify({ status }),
-  });
+  const booking = await request(
+    `/bookings/${encodeURIComponent(id)}/status`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }
+  );
 
   notifySubscribers();
   return mapBooking(booking);
@@ -246,7 +261,7 @@ export async function rejectBooking(id) {
   return updateBookingStatus(id, "rejected");
 }
 
-export async function deleteBooking(id) {
+export async function deleteBooking() {
   throw new Error(
     "Deleting bookings is not supported by the current backend API."
   );
@@ -260,6 +275,7 @@ export async function suggestRooms({
 } = {}) {
   if (!start || !end) {
     const rooms = await getRooms();
+
     return rooms.filter((room) => {
       if (Number(capacity) > 0 && room.capacity < Number(capacity)) {
         return false;
@@ -282,6 +298,7 @@ export async function suggestRooms({
   equipment.forEach((item) => params.append("equipment", item));
 
   const result = await request(`/availability?${params.toString()}`);
+
   const rooms = Array.isArray(result)
     ? result
     : result.available_rooms || result.rooms || [];
@@ -297,6 +314,7 @@ export async function loginUser(roleOrId) {
   if (user) return user;
 
   const role = String(roleOrId || "student");
+
   return {
     id: `u_${Date.now()}`,
     name: `${role.charAt(0).toUpperCase()}${role.slice(1)} User`,

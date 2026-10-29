@@ -74,24 +74,40 @@ def initialize_database():
                 ALTER TABLE bookings ADD COLUMN escalated_at TEXT
             """)
 
-        # Add sample rooms only if the rooms table is empty
-        existing_rooms = connection.execute(
-            "SELECT COUNT(*) FROM rooms"
-        ).fetchone()[0]
+                # Add the initial campus facilities without duplicating them
+        sample_rooms = [
+            ("Seminar Hall A", 100, "projector,whiteboard,audio,microphone"),
+            ("Computer Lab 1", 40, "computers,projector,internet"),
+            ("Classroom 201", 60, "projector,whiteboard"),
+            ("Classroom 202", 50, "projector,whiteboard"),
+            ("Classroom 203", 45, "whiteboard"),
+            ("Lecture Hall A", 200, "projector,audio,microphone"),
+            ("Lecture Hall B", 150, "projector,audio,microphone,whiteboard"),
+            ("Auditorium", 500, "projector,audio,microphone,stage"),
+            ("Physics Laboratory", 35, "lab_benches,scientific_instruments"),
+            ("Chemistry Laboratory", 30, "lab_benches,fume_hood,safety_equipment"),
+            ("Electronics Lab", 32, "computers,circuit_kits,oscilloscopes"),
+            ("Research Lab", 25, "computers,projector,internet"),
+            ("Library Study Room", 12, "whiteboard,power_outlets"),
+            ("Conference Room", 20, "display,video_conferencing,whiteboard"),
+            ("Tutorial Room 101", 25, "whiteboard"),
+            ("Tutorial Room 102", 25, "projector,whiteboard"),
+            ("Computer Lab 2", 45, "computers,projector,internet"),
+            ("Innovation Hub", 40, "computers,projector,3d_printer"),
+            ("Sports Activity Hall", 120, "audio,sports_equipment"),
+            ("Faculty Meeting Room", 15, "display,video_conferencing,whiteboard"),
+        ]
 
-        if existing_rooms == 0:
-            sample_rooms = [
-                ("Seminar Hall A", 100, "projector,whiteboard,audio"),
-                ("Computer Lab 1", 40, "computers,projector"),
-                ("Classroom 201", 60, "projector,whiteboard"),
-            ]
-
-            connection.executemany(
+        for name, capacity, equipment in sample_rooms:
+            connection.execute(
                 """
                 INSERT INTO rooms (name, capacity, equipment)
-                VALUES (?, ?, ?)
+                SELECT ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM rooms WHERE name = ?
+                )
                 """,
-                sample_rooms,
+                (name, capacity, equipment, name),
             )
 
 

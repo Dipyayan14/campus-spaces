@@ -10,7 +10,10 @@ import Toast from "../components/Toast";
 
 export default function MaintenanceLog() {
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const canManageStatus =
+    user?.role === "venue_admin" ||
+    user?.role === "super_admin" ||
+    user?.role === "admin";
 
   const [rooms, setRooms] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -337,7 +340,7 @@ export default function MaintenanceLog() {
                       </td>
 
                       <td className="py-3.5 px-3">
-                        {isAdmin ? (
+                        {canManageStatus ? (
                           <select
                             value={item.status}
                             disabled={isUpdating}
@@ -400,7 +403,7 @@ export default function MaintenanceLog() {
 
                   <div className="flex items-center justify-between pt-1">
                     <span className="text-slate-500">Status:</span>
-                    {isAdmin ? (
+                    {canManageStatus ? (
                       <select
                         value={item.status}
                         disabled={isUpdating}
