@@ -4,13 +4,11 @@ from datetime import datetime
 import sqlite3
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from database import (
-    initialize_database,
-    list_rooms,
-    get_connection,
-)
+from database import initialize_database, list_rooms, get_connection
+from workflow_service import get_workflow_state
 
 
 @asynccontextmanager
@@ -22,8 +20,21 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="SpaceSync AI API",
     description="Campus room booking and availability backend",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -57,7 +68,9 @@ def check_time_range(start_time: datetime, end_time: datetime):
         )
 
 
-def find_conflict(connection, room_id, start_time, end_time, exclude_id=None):
+def find_conflict(
+    connection, room_id, start_time, end_time, exclude_id=None
+):
     query = """
         SELECT id, title, start_time, end_time, status, booking_type
         FROM bookings
@@ -76,7 +89,7 @@ def find_conflict(connection, room_id, start_time, end_time, exclude_id=None):
 
 
 def booking_to_dict(row):
-    return {
+    booking = {
         "id": row["id"],
         "room_id": row["room_id"],
         "title": row["title"],
@@ -85,6 +98,14 @@ def booking_to_dict(row):
         "booking_type": row["booking_type"],
         "status": row["status"],
     }
+
+    if "submitted_at" in row.keys() and row["submitted_at"]:
+        booking["workflow"] = get_workflow_state(
+            submitted_at=row["submitted_at"],
+            start_time=row["start_time"],
+        )
+
+    return booking
 
 
 @app.get("/")
@@ -111,7 +132,7 @@ def get_bookings():
         rows = connection.execute(
             """
             SELECT id, room_id, title, start_time, end_time,
-                   booking_type, status
+                   booking_type, status, submitted_at
             FROM bookings
             ORDER BY start_time
             """
@@ -177,7 +198,7 @@ def create_booking(booking: BookingRequest):
             row = connection.execute(
                 """
                 SELECT id, room_id, title, start_time, end_time,
-                       booking_type, status
+                       booking_type, status, submitted_at
                 FROM bookings
                 WHERE id = ?
                 """,
@@ -237,7 +258,10 @@ def update_booking_status(
                 if conflict:
                     raise HTTPException(
                         status_code=409,
-                        detail="Cannot approve: another pending or approved booking overlaps.",
+                        detail=(
+                            "Cannot approve: another pending or approved "
+                            "booking overlaps."
+                        ),
                     )
 
             connection.execute(
@@ -248,8 +272,9 @@ def update_booking_status(
             updated = connection.execute(
                 """
                 SELECT id, room_id, title, start_time, end_time,
-                       booking_type, status
-                FROM bookings WHERE id = ?
+                       booking_type, status, submitted_at
+                FROM bookings
+                WHERE id = ?
                 """,
                 (booking_id,),
             ).fetchone()

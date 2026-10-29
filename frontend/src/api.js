@@ -1,11 +1,11 @@
 // src/api.js
-// Centralized API service layer with localStorage persistence and multi-tab sync.
+// Centralized API service layer connecting to the FastAPI backend,
+// with client-side reactive change subscriptions and local persistence for maintenance logs.
 
-import {
-  rooms as initialRooms,
-  generateInitialBookings,
-  generateInitialMaintenanceLogs,
-} from "./mockData";
+import { generateInitialMaintenanceLogs } from "./mockData";
+
+const API_BASE = "http://127.0.0.1:8000";
+const MAINTENANCE_STORAGE_KEY = "campus_spaces_maintenance_v1";
 
 // Demo personas for quick login testing
 export const demoUsers = [
@@ -16,7 +16,6 @@ export const demoUsers = [
   { id: "u5", name: "Exam Cell Officer", role: "exam_cell" },
 ];
 
-// Priority map matching backend contract
 export const TYPE_PRIORITY = {
   exam: 4,
   class: 3,
@@ -24,23 +23,9 @@ export const TYPE_PRIORITY = {
   event: 1,
 };
 
-const STORAGE_KEY = "campus_spaces_state_v1";
-
-// Helper for simulating network latency
-const delay = (ms = 120) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function getTodayDateString() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-// In-memory state containers
-const roomList = [...initialRooms];
-let bookingList = [];
-let maintenanceLogList = [];
-
-// Event subscribers for in-tab reactive updates
+// ==========================================
+// Reactive Change Subscriptions & Tab Sync
+// ==========================================
 const listeners = new Set();
 
 function notifySubscribers() {
@@ -55,7 +40,7 @@ function notifySubscribers() {
 
 /**
  * Subscribes a callback to data changes in the local session.
- * Fires after createBooking, approveBooking, rejectBooking, deleteBooking, and updateMaintenanceStatus.
+ * Fires after createBooking, approveBooking, rejectBooking, and updateMaintenanceStatus.
  * Returns an unsubscribe cleanup function.
  */
 export function subscribeToChanges(callback) {
@@ -65,69 +50,14 @@ export function subscribeToChanges(callback) {
   };
 }
 
-/**
- * Saves current bookings and maintenance logs to localStorage with today's seedDate.
- */
-function saveToStorage() {
-  try {
-    const payload = {
-      seedDate: getTodayDateString(),
-      bookings: bookingList,
-      maintenanceLogs: maintenanceLogList,
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  } catch (err) {
-    console.warn("Failed to write state to localStorage (falling back to memory):", err);
-  }
-}
-
-/**
- * Loads bookings and maintenance logs from localStorage.
- * If data is missing or from a previous day (seedDate mismatch), regenerates fresh time-relative sample data.
- */
-function loadFromStorage() {
-  const todayStr = getTodayDateString();
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (
-        parsed &&
-        parsed.seedDate === todayStr &&
-        Array.isArray(parsed.bookings) &&
-        Array.isArray(parsed.maintenanceLogs)
-      ) {
-        bookingList = parsed.bookings;
-        maintenanceLogList = parsed.maintenanceLogs;
-        return;
-      }
-    }
-  } catch (err) {
-    console.warn("Failed to read from localStorage:", err);
-  }
-
-  // Stored data is missing, corrupted, or from another date: reseed
-  bookingList = generateInitialBookings();
-  maintenanceLogList = generateInitialMaintenanceLogs();
-  saveToStorage();
-}
-
-// Initialize store
-loadFromStorage();
-
-// Synchronize state across open browser tabs via storage events
+// Synchronize maintenance state across open browser tabs via storage events
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
-    if (event.key === STORAGE_KEY && event.newValue) {
+    if (event.key === MAINTENANCE_STORAGE_KEY && event.newValue) {
       try {
         const parsed = JSON.parse(event.newValue);
-        if (
-          parsed &&
-          Array.isArray(parsed.bookings) &&
-          Array.isArray(parsed.maintenanceLogs)
-        ) {
-          bookingList = parsed.bookings;
-          maintenanceLogList = parsed.maintenanceLogs;
+        if (Array.isArray(parsed)) {
+          maintenanceLogList = parsed;
           notifySubscribers();
         }
       } catch (err) {
@@ -137,140 +67,69 @@ if (typeof window !== "undefined") {
   });
 }
 
+// ==========================================
+// Maintenance Logs (Mock / LocalStorage)
+// TODO: connect to backend when maintenance endpoints are added
+// ==========================================
+let maintenanceLogList = [];
+
+function saveMaintenanceToStorage() {
+  try {
+    localStorage.setItem(MAINTENANCE_STORAGE_KEY, JSON.stringify(maintenanceLogList));
+  } catch (err) {
+    console.warn("Failed to write maintenance logs to localStorage:", err);
+  }
+}
+
+function loadMaintenanceFromStorage() {
+  try {
+    const raw = localStorage.getItem(MAINTENANCE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        maintenanceLogList = parsed;
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to read maintenance logs from localStorage:", err);
+  }
+
+  // Reseed initial maintenance sample data
+  maintenanceLogList = generateInitialMaintenanceLogs();
+  saveMaintenanceToStorage();
+}
+
+loadMaintenanceFromStorage();
+
 /**
- * Resets local demo state back to freshly generated sample data.
+ * Reset local demo maintenance data
+ * TODO: connect to backend
  */
 export function resetDemoData() {
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(MAINTENANCE_STORAGE_KEY);
   } catch (err) {
     console.warn("Failed to clear localStorage:", err);
   }
-  bookingList = generateInitialBookings();
   maintenanceLogList = generateInitialMaintenanceLogs();
-  saveToStorage();
+  saveMaintenanceToStorage();
   notifySubscribers();
-}
-
-/**
- * Fetch all campus rooms
- * GET /rooms
- */
-export async function getRooms() {
-  await delay();
-  return [...roomList];
-}
-
-/**
- * Fetch all bookings across all rooms
- * GET /bookings
- */
-export async function getBookings() {
-  await delay();
-  return [...bookingList];
-}
-
-/**
- * Create a new booking request
- * POST /bookings
- */
-export async function createBooking(data) {
-  await delay();
-  const newBooking = {
-    id: `b_${Date.now()}`,
-    roomId: data.roomId,
-    title: data.title,
-    type: data.type || "event",
-    start: data.start,
-    end: data.end,
-    status: data.status || "pending",
-    requestedBy: data.requestedBy || "Campus Member",
-  };
-  bookingList = [newBooking, ...bookingList];
-  saveToStorage();
-  notifySubscribers();
-  return newBooking;
-}
-
-/**
- * Approve a pending booking
- * PATCH /bookings/:id/approve
- */
-export async function approveBooking(id) {
-  await delay();
-  let updatedBooking = null;
-  bookingList = bookingList.map((b) => {
-    if (b.id === id) {
-      updatedBooking = { ...b, status: "approved" };
-      return updatedBooking;
-    }
-    return b;
-  });
-
-  if (!updatedBooking) {
-    throw new Error(`Booking with ID "${id}" was not found.`);
-  }
-
-  saveToStorage();
-  notifySubscribers();
-  return updatedBooking;
-}
-
-/**
- * Reject a pending booking
- * PATCH /bookings/:id/reject
- */
-export async function rejectBooking(id) {
-  await delay();
-  let updatedBooking = null;
-  bookingList = bookingList.map((b) => {
-    if (b.id === id) {
-      updatedBooking = { ...b, status: "rejected" };
-      return updatedBooking;
-    }
-    return b;
-  });
-
-  if (!updatedBooking) {
-    throw new Error(`Booking with ID "${id}" was not found.`);
-  }
-
-  saveToStorage();
-  notifySubscribers();
-  return updatedBooking;
-}
-
-/**
- * Delete a booking
- * DELETE /bookings/:id
- */
-export async function deleteBooking(id) {
-  await delay();
-  const exists = bookingList.some((b) => b.id === id);
-  if (!exists) {
-    throw new Error(`Booking with ID "${id}" was not found.`);
-  }
-  bookingList = bookingList.filter((b) => b.id !== id);
-  saveToStorage();
-  notifySubscribers();
-  return { success: true, id };
 }
 
 /**
  * Fetch all facility maintenance logs
- * GET /maintenance-logs
+ * TODO: connect to backend
  */
 export async function getMaintenanceLogs() {
-  await delay();
   return [...maintenanceLogList];
 }
 
 /**
  * Updates status of a maintenance log entry and records update timestamp.
- * PATCH /maintenance-logs/:id/status
+ * TODO: connect to backend
  */
 export async function updateMaintenanceStatus(id, status) {
-  await delay();
   let updatedLog = null;
   const nowIso = new Date().toISOString();
 
@@ -290,79 +149,161 @@ export async function updateMaintenanceStatus(id, status) {
     throw new Error(`Maintenance record with ID "${id}" was not found.`);
   }
 
-  saveToStorage();
+  saveMaintenanceToStorage();
   notifySubscribers();
   return updatedLog;
 }
 
-/**
- * Suggest available rooms based on capacity, required equipment, and time window
- * GET /rooms/suggest?capacity=&equipment=&start=&end=
- */
-export async function suggestRooms({ capacity = 0, equipment = [], start = null, end = null }) {
-  await delay();
+// ==========================================
+// Real Backend API Client (from main)
+// ==========================================
 
-  const reqCapacity = Number(capacity) || 0;
-  const reqEquipment = Array.isArray(equipment) ? equipment : [];
-
-  return roomList.filter((room) => {
-    if (reqCapacity > 0 && room.capacity < reqCapacity) {
-      return false;
-    }
-
-    if (
-      reqEquipment.length > 0 &&
-      !reqEquipment.every((item) =>
-        room.equipment.some((eq) => eq.toLowerCase() === item.toLowerCase())
-      )
-    ) {
-      return false;
-    }
-
-    if (start && end) {
-      const slotStart = new Date(start).getTime();
-      const slotEnd = new Date(end).getTime();
-
-      const hasConflict = bookingList.some((booking) => {
-        if (booking.roomId !== room.id || booking.status !== "approved") {
-          return false;
-        }
-        const bStart = new Date(booking.start).getTime();
-        const bEnd = new Date(booking.end).getTime();
-        return slotStart < bEnd && slotEnd > bStart;
-      });
-
-      if (hasConflict) {
-        return false;
-      }
-    }
-
-    return true;
+async function request(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
   });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `API request failed (${response.status})`);
+  }
+
+  if (response.status === 204) return null;
+  return response.json();
 }
 
-/**
- * Simulate user login and fetch available demo roles
- */
-export async function loginUser(roleOrId) {
-  await delay();
-  const foundUser = demoUsers.find(
-    (u) => u.role === roleOrId || u.id === roleOrId
-  );
-  if (foundUser) {
-    return foundUser;
-  }
+function mapRoom(room) {
   return {
-    id: `u_${Date.now()}`,
-    name: `${roleOrId.charAt(0).toUpperCase() + roleOrId.slice(1)} User`,
-    role: roleOrId,
+    ...room,
+    id: room.id,
+    equipment: Array.isArray(room.equipment)
+      ? room.equipment
+      : typeof room.equipment === "string"
+      ? room.equipment.split(",").map((s) => s.trim()).filter(Boolean)
+      : [],
   };
 }
 
-/**
- * Fetch available demo personas
- */
+function mapBooking(booking) {
+  return {
+    ...booking,
+    id: booking.id,
+    roomId: booking.room_id,
+    title: booking.title,
+    type: booking.booking_type || booking.type || "event",
+    start: booking.start_time || booking.start,
+    end: booking.end_time || booking.end,
+    status: booking.status,
+    requestedBy: booking.requested_by || booking.requestedBy || "Campus Member",
+  };
+}
+
+export async function getRooms() {
+  const rooms = await request("/rooms");
+  return rooms.map(mapRoom);
+}
+
+export async function getBookings() {
+  const bookings = await request("/bookings");
+  return bookings.map(mapBooking);
+}
+
+export async function createBooking(data) {
+  const booking = await request("/bookings", {
+    method: "POST",
+    body: JSON.stringify({
+      room_id: data.roomId ?? data.room_id,
+      title: data.title,
+      start_time: data.start ?? data.start_time,
+      end_time: data.end ?? data.end_time,
+      booking_type: data.type ?? data.booking_type ?? "event",
+    }),
+  });
+
+  notifySubscribers();
+  return mapBooking(booking);
+}
+
+async function updateBookingStatus(id, status) {
+  const booking = await request(`/bookings/${encodeURIComponent(id)}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+
+  notifySubscribers();
+  return mapBooking(booking);
+}
+
+export async function approveBooking(id) {
+  return updateBookingStatus(id, "approved");
+}
+
+export async function rejectBooking(id) {
+  return updateBookingStatus(id, "rejected");
+}
+
+export async function deleteBooking(id) {
+  throw new Error(
+    "Deleting bookings is not supported by the current backend API."
+  );
+}
+
+export async function suggestRooms({
+  capacity = 0,
+  equipment = [],
+  start = null,
+  end = null,
+} = {}) {
+  if (!start || !end) {
+    const rooms = await getRooms();
+    return rooms.filter((room) => {
+      if (Number(capacity) > 0 && room.capacity < Number(capacity)) {
+        return false;
+      }
+
+      return equipment.every((item) =>
+        room.equipment.some(
+          (value) => value.toLowerCase() === item.toLowerCase()
+        )
+      );
+    });
+  }
+
+  const params = new URLSearchParams({
+    start_time: start,
+    end_time: end,
+    min_capacity: String(Number(capacity) || 0),
+  });
+
+  equipment.forEach((item) => params.append("equipment", item));
+
+  const result = await request(`/availability?${params.toString()}`);
+  const rooms = Array.isArray(result)
+    ? result
+    : result.available_rooms || result.rooms || [];
+
+  return rooms.map(mapRoom);
+}
+
+export async function loginUser(roleOrId) {
+  const user = demoUsers.find(
+    (item) => item.role === roleOrId || item.id === roleOrId
+  );
+
+  if (user) return user;
+
+  const role = String(roleOrId || "student");
+  return {
+    id: `u_${Date.now()}`,
+    name: `${role.charAt(0).toUpperCase()}${role.slice(1)} User`,
+    role,
+  };
+}
+
 export async function getDemoUsers() {
-  await delay();
   return [...demoUsers];
 }
