@@ -2,7 +2,6 @@
 // Main application router with authentication guards, role-based route protection,
 // and protected layout with the sticky Navbar.
 
-import React from "react";
 import { Routes, Route, Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "./context/AuthContext";
 import Navbar from "./components/Navbar";
@@ -13,6 +12,7 @@ import Calendar from "./pages/Calendar";
 import BookRoom from "./pages/BookRoom";
 import Approvals from "./pages/Approvals";
 import Insights from "./pages/Insights";
+import MaintenanceLog from "./pages/MaintenanceLog";
 
 /**
  * ProtectedLayout:
@@ -29,7 +29,7 @@ function ProtectedLayout() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F8F9FF] flex flex-col text-[#0B1C30]">
+    <div className="min-h-screen bg-slate-50 flex flex-col text-slate-900">
       <Navbar />
       <main className="flex-1">
         <Outlet />
@@ -82,6 +82,14 @@ export default function App() {
           element={
             <RoleRoute allowedRoles={["admin", "exam_cell"]}>
               <Insights />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/maintenance-log"
+          element={
+            <RoleRoute allowedRoles={["admin", "faculty"]}>
+              <MaintenanceLog />
             </RoleRoute>
           }
         />

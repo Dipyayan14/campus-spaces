@@ -1,10 +1,13 @@
 // src/api.js
-// Centralized API service layer. All data calls in pages must import from here.
-// In-memory state simulates backend behavior for the hackathon prototype.
+// Centralized API service layer with localStorage persistence and multi-tab sync.
 
-import { rooms as initialRooms, bookings as initialBookings } from "./mockData";
+import {
+  rooms as initialRooms,
+  generateInitialBookings,
+  generateInitialMaintenanceLogs,
+} from "./mockData";
 
-// Demo personas for quick login testing during presentations
+// Demo personas for quick login testing
 export const demoUsers = [
   { id: "u1", name: "Rahul Sharma", role: "student" },
   { id: "u2", name: "Coding Club Lead", role: "club" },
@@ -21,12 +24,133 @@ export const TYPE_PRIORITY = {
   event: 1,
 };
 
-// In-memory storage for active session
-let roomList = [...initialRooms];
-let bookingList = [...initialBookings];
+const STORAGE_KEY = "campus_spaces_state_v1";
 
-// Small helper to simulate realistic network delay (150ms)
-const delay = (ms = 150) => new Promise((resolve) => setTimeout(resolve, ms));
+// Helper for simulating network latency
+const delay = (ms = 120) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function getTodayDateString() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// In-memory state containers
+const roomList = [...initialRooms];
+let bookingList = [];
+let maintenanceLogList = [];
+
+// Event subscribers for in-tab reactive updates
+const listeners = new Set();
+
+function notifySubscribers() {
+  listeners.forEach((callback) => {
+    try {
+      callback();
+    } catch (err) {
+      console.error("Error in change subscriber callback:", err);
+    }
+  });
+}
+
+/**
+ * Subscribes a callback to data changes in the local session.
+ * Fires after createBooking, approveBooking, rejectBooking, deleteBooking, and updateMaintenanceStatus.
+ * Returns an unsubscribe cleanup function.
+ */
+export function subscribeToChanges(callback) {
+  listeners.add(callback);
+  return () => {
+    listeners.delete(callback);
+  };
+}
+
+/**
+ * Saves current bookings and maintenance logs to localStorage with today's seedDate.
+ */
+function saveToStorage() {
+  try {
+    const payload = {
+      seedDate: getTodayDateString(),
+      bookings: bookingList,
+      maintenanceLogs: maintenanceLogList,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (err) {
+    console.warn("Failed to write state to localStorage (falling back to memory):", err);
+  }
+}
+
+/**
+ * Loads bookings and maintenance logs from localStorage.
+ * If data is missing or from a previous day (seedDate mismatch), regenerates fresh time-relative sample data.
+ */
+function loadFromStorage() {
+  const todayStr = getTodayDateString();
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        parsed.seedDate === todayStr &&
+        Array.isArray(parsed.bookings) &&
+        Array.isArray(parsed.maintenanceLogs)
+      ) {
+        bookingList = parsed.bookings;
+        maintenanceLogList = parsed.maintenanceLogs;
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to read from localStorage:", err);
+  }
+
+  // Stored data is missing, corrupted, or from another date: reseed
+  bookingList = generateInitialBookings();
+  maintenanceLogList = generateInitialMaintenanceLogs();
+  saveToStorage();
+}
+
+// Initialize store
+loadFromStorage();
+
+// Synchronize state across open browser tabs via storage events
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === STORAGE_KEY && event.newValue) {
+      try {
+        const parsed = JSON.parse(event.newValue);
+        if (
+          parsed &&
+          Array.isArray(parsed.bookings) &&
+          Array.isArray(parsed.maintenanceLogs)
+        ) {
+          bookingList = parsed.bookings;
+          maintenanceLogList = parsed.maintenanceLogs;
+          notifySubscribers();
+        }
+      } catch (err) {
+        console.warn("Failed to process cross-tab storage update:", err);
+      }
+    }
+  });
+}
+
+/**
+ * Resets local demo state back to freshly generated sample data.
+ */
+export function resetDemoData() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (err) {
+    console.warn("Failed to clear localStorage:", err);
+  }
+  bookingList = generateInitialBookings();
+  maintenanceLogList = generateInitialMaintenanceLogs();
+  saveToStorage();
+  notifySubscribers();
+}
 
 /**
  * Fetch all campus rooms
@@ -63,6 +187,8 @@ export async function createBooking(data) {
     requestedBy: data.requestedBy || "Campus Member",
   };
   bookingList = [newBooking, ...bookingList];
+  saveToStorage();
+  notifySubscribers();
   return newBooking;
 }
 
@@ -84,6 +210,9 @@ export async function approveBooking(id) {
   if (!updatedBooking) {
     throw new Error(`Booking with ID "${id}" was not found.`);
   }
+
+  saveToStorage();
+  notifySubscribers();
   return updatedBooking;
 }
 
@@ -105,6 +234,9 @@ export async function rejectBooking(id) {
   if (!updatedBooking) {
     throw new Error(`Booking with ID "${id}" was not found.`);
   }
+
+  saveToStorage();
+  notifySubscribers();
   return updatedBooking;
 }
 
@@ -119,7 +251,48 @@ export async function deleteBooking(id) {
     throw new Error(`Booking with ID "${id}" was not found.`);
   }
   bookingList = bookingList.filter((b) => b.id !== id);
+  saveToStorage();
+  notifySubscribers();
   return { success: true, id };
+}
+
+/**
+ * Fetch all facility maintenance logs
+ * GET /maintenance-logs
+ */
+export async function getMaintenanceLogs() {
+  await delay();
+  return [...maintenanceLogList];
+}
+
+/**
+ * Updates status of a maintenance log entry and records update timestamp.
+ * PATCH /maintenance-logs/:id/status
+ */
+export async function updateMaintenanceStatus(id, status) {
+  await delay();
+  let updatedLog = null;
+  const nowIso = new Date().toISOString();
+
+  maintenanceLogList = maintenanceLogList.map((item) => {
+    if (item.id === id) {
+      updatedLog = {
+        ...item,
+        status,
+        updatedAt: nowIso,
+      };
+      return updatedLog;
+    }
+    return item;
+  });
+
+  if (!updatedLog) {
+    throw new Error(`Maintenance record with ID "${id}" was not found.`);
+  }
+
+  saveToStorage();
+  notifySubscribers();
+  return updatedLog;
 }
 
 /**
@@ -133,12 +306,10 @@ export async function suggestRooms({ capacity = 0, equipment = [], start = null,
   const reqEquipment = Array.isArray(equipment) ? equipment : [];
 
   return roomList.filter((room) => {
-    // 1. Capacity filter
     if (reqCapacity > 0 && room.capacity < reqCapacity) {
       return false;
     }
 
-    // 2. Equipment filter (room must have all requested items)
     if (
       reqEquipment.length > 0 &&
       !reqEquipment.every((item) =>
@@ -148,7 +319,6 @@ export async function suggestRooms({ capacity = 0, equipment = [], start = null,
       return false;
     }
 
-    // 3. Time slot overlap filter with approved bookings
     if (start && end) {
       const slotStart = new Date(start).getTime();
       const slotEnd = new Date(end).getTime();
@@ -159,7 +329,6 @@ export async function suggestRooms({ capacity = 0, equipment = [], start = null,
         }
         const bStart = new Date(booking.start).getTime();
         const bEnd = new Date(booking.end).getTime();
-        // Overlap condition: start < bEnd and end > bStart
         return slotStart < bEnd && slotEnd > bStart;
       });
 
@@ -174,7 +343,6 @@ export async function suggestRooms({ capacity = 0, equipment = [], start = null,
 
 /**
  * Simulate user login and fetch available demo roles
- * POST /auth/login
  */
 export async function loginUser(roleOrId) {
   await delay();
@@ -184,7 +352,6 @@ export async function loginUser(roleOrId) {
   if (foundUser) {
     return foundUser;
   }
-  // Fallback generic role user
   return {
     id: `u_${Date.now()}`,
     name: `${roleOrId.charAt(0).toUpperCase() + roleOrId.slice(1)} User`,
@@ -193,7 +360,7 @@ export async function loginUser(roleOrId) {
 }
 
 /**
- * Fetch available demo personas for easy login switching during presentations
+ * Fetch available demo personas
  */
 export async function getDemoUsers() {
   await delay();
