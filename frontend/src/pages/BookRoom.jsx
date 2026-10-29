@@ -4,7 +4,7 @@
 // and the "Smart Alternative Suggestions" panel using suggestRooms() from api.js.
 
 import React, { useState, useEffect, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { getRooms, getBookings, createBooking, suggestRooms } from "../api";
 import { checkBookingClash, TYPE_PRIORITY } from "../utils/clash";
@@ -13,20 +13,24 @@ import Toast from "../components/Toast";
 export default function BookRoom() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const prefill = location.state || {};
 
   const [rooms, setRooms] = useState([]);
   const [existingBookings, setExistingBookings] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // Form State
-  const [roomId, setRoomId] = useState("");
-  const [title, setTitle] = useState("");
-  const [type, setType] = useState("event");
-  const [date, setDate] = useState("2026-11-02");
-  const [startTime, setStartTime] = useState("10:00");
-  const [endTime, setEndTime] = useState("11:30");
-  const [attendance, setAttendance] = useState(40);
-  const [selectedEquipment, setSelectedEquipment] = useState(["projector"]);
+  const [roomId, setRoomId] = useState(prefill.roomId ? String(prefill.roomId) : "");
+  const [title, setTitle] = useState(prefill.title || "");
+  const [type, setType] = useState(prefill.type || "event");
+  const [date, setDate] = useState(prefill.date || "2026-11-02");
+  const [startTime, setStartTime] = useState(prefill.startTime || "10:00");
+  const [endTime, setEndTime] = useState(prefill.endTime || "11:30");
+  const [attendance, setAttendance] = useState(Number(prefill.attendance) || 40);
+  const [selectedEquipment, setSelectedEquipment] = useState(
+    Array.isArray(prefill.equipment) && prefill.equipment.length > 0 ? prefill.equipment : ["projector"]
+  );
 
   // Suggestions state
   const [suggestions, setSuggestions] = useState([]);
@@ -51,7 +55,7 @@ export default function BookRoom() {
         ]);
         setRooms(roomsData);
         setExistingBookings(bookingsData);
-        if (roomsData.length > 0) {
+        if (roomsData.length > 0 && !prefill.roomId) {
           setRoomId(String(roomsData[0].id));
         }
       } catch (err) {

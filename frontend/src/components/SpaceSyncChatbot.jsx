@@ -1,115 +1,47 @@
 // src/components/SpaceSyncChatbot.jsx
-// SpaceSync assistant: answers basic room, availability, booking, and navigation questions.
+// SpaceSync Assistant: Intelligent room recommendations, event planning checklist,
+// real-time room availability, and pre-filled booking navigation.
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { getRooms, getBookings } from "../api";
+import { extractEventDetails, extractIntent } from "../utils/chatIntent";
+import { getEventProfile } from "../utils/eventProfiles";
+import { recommendRooms, getCurrentlyFreeRooms } from "../utils/roomMatcher";
+import { enhanceReply } from "../utils/chatAI";
 
-const QUICK_PROMPTS = [
-  "Show me available rooms",
-  "How do I book a room?",
-  "Show my booking status",
+const BASE_QUICK_PROMPTS = [
+  "Find a room for my event",
+  "What's free right now?",
+  "Plan my event",
+  "Booking status",
 ];
 
-function normalize(value) {
-  return String(value || "").toLowerCase().trim();
+function formatTime12(timeStr) {
+  if (!timeStr) return "";
+  const parts = timeStr.split(":");
+  let h = parseInt(parts[0], 10);
+  const m = parts[1] || "00";
+  const ampm = h >= 12 ? "PM" : "AM";
+  if (h > 12) h -= 12;
+  if (h === 0) h = 12;
+  return `${h}:${m} ${ampm}`;
 }
 
-function formatTime(value) {
-  if (!value) return "";
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-
-  return date.toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function formatDate(value) {
-  if (!value) return "date not specified";
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-
-  return date.toLocaleDateString([], {
+function formatDateDisplay(dateStr) {
+  if (!dateStr) return "";
+  const date = new Date(dateStr + "T00:00:00");
+  if (Number.isNaN(date.getTime())) return dateStr;
+  return date.toLocaleDateString("en-US", {
+    weekday: "short",
     month: "short",
     day: "numeric",
   });
 }
 
-function getBookingRoomId(booking) {
-  return booking?.roomId ?? booking?.room_id ?? booking?.room?.id;
-}
-
-function getBookingStart(booking) {
-  return booking?.start ?? booking?.start_time ?? booking?.startTime;
-}
-
-function getBookingEnd(booking) {
-  return booking?.end ?? booking?.end_time ?? booking?.endTime;
-}
-
-function getRoomName(room) {
-  return room?.name || room?.room_name || room?.title || `Room ${room?.id}`;
-}
-
-function getRoomCapacity(room) {
-  return Number(room?.capacity ?? room?.seats ?? 0);
-}
-
-function getRoomEquipment(room) {
-  const equipment = room?.equipment ?? room?.amenities ?? [];
-  return Array.isArray(equipment) ? equipment.join(" ").toLowerCase() : "";
-}
-
-function getLocalDateKey(value) {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) return "";
-
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
-}
-
-function isSameLocalDay(a, b) {
-  return Boolean(a && b) && getLocalDateKey(a) === getLocalDateKey(b);
-}
-
-function overlaps(startA, endA, startB, endB) {
-  const aStart = new Date(startA).getTime();
-  const aEnd = new Date(endA).getTime();
-  const bStart = new Date(startB).getTime();
-  const bEnd = new Date(endB).getTime();
-
-  if ([aStart, aEnd, bStart, bEnd].some(Number.isNaN)) {
-    return false;
-  }
-
-  return aStart < bEnd && bStart < aEnd;
-}
-
-function getBookingStatus(booking) {
-  return normalize(booking?.status || "pending");
-}
-
-function getDisplayStatus(status) {
-  const labels = {
-    approved: "Approved",
-    pending: "Pending review",
-    rejected: "Rejected",
-    cancelled: "Cancelled",
-  };
-
-  return labels[status] || status || "Unknown";
+function capitalize(s) {
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ");
 }
 
 export default function SpaceSyncChatbot() {
@@ -119,456 +51,375 @@ export default function SpaceSyncChatbot() {
 
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      sender: "bot",
-      text: "Hi! I'm the SpaceSync assistant. I can help you find campus rooms, check availability, understand booking statuses, and navigate the app.",
-    },
-  ]);
+  const [isTyping, setIsTyping] = useState(false);
+  const [expandedSlots, setExpandedSlots] = useState({});
+
+  // Rooms and bookings fetched from backend
   const [rooms, setRooms] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [loadingData, setLoadingData] = useState(false);
   const [dataError, setDataError] = useState("");
 
+  // Stateful conversation memory across the session
+  const [sessionContext, setSessionContext] = useState({
+    eventType: null,
+    attendees: { min: null, max: null },
+    equipment: [],
+    date: null,
+    startTime: null,
+    endTime: null,
+    waitingFor: null, // "attendees" | "time" | null
+  });
+
+  const [messages, setMessages] = useState([
+    {
+      id: "initial-msg",
+      sender: "bot",
+      text: "Hi! I'm your SpaceSync Assistant. I can recommend halls for events, check live room availability, and help you plan your requirements.",
+    },
+  ]);
+
+  // Load real data from api.js when chatbot opens
   useEffect(() => {
     if (!isOpen) return;
 
     let active = true;
-
-    async function loadData() {
+    async function loadBackendData() {
       setLoadingData(true);
       setDataError("");
-
       try {
-        const [roomData, bookingData] = await Promise.all([
+        const [roomsData, bookingsData] = await Promise.all([
           getRooms(),
           getBookings(),
         ]);
-
         if (!active) return;
-
-        setRooms(Array.isArray(roomData) ? roomData : []);
-        setBookings(Array.isArray(bookingData) ? bookingData : []);
-      } catch (error) {
+        setRooms(Array.isArray(roomsData) ? roomsData : []);
+        setBookings(Array.isArray(bookingsData) ? bookingsData : []);
+      } catch (err) {
         if (!active) return;
-
         setDataError(
-          "I couldn't reach the booking service. Check that the backend is running, then try again."
+          "I couldn't reach the room data. Please check that the backend is running and try again."
         );
       } finally {
         if (active) setLoadingData(false);
       }
     }
 
-    loadData();
-
+    loadBackendData();
     return () => {
       active = false;
     };
   }, [isOpen]);
 
+  // Auto-scroll to bottom of chat
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isOpen]);
+  }, [messages, isTyping, isOpen]);
 
-  function addMessage(sender, text, action = null) {
-    setMessages((previous) => [
-      ...previous,
+  const addMessage = useCallback((msg) => {
+    setMessages((prev) => [
+      ...prev,
       {
-        id: `${Date.now()}-${Math.random()}`,
-        sender,
-        text,
-        action,
+        id: `msg-${Date.now()}-${Math.random()}`,
+        ...msg,
       },
     ]);
-  }
+  }, []);
 
-  function getAvailabilityMessage(query) {
-    const today = new Date();
-    const todayKey = getLocalDateKey(today);
-    const approvedBookings = bookings.filter(
-      (booking) => getBookingStatus(booking) === "approved"
-    );
+  const toggleFreeSlots = (cardKey) => {
+    setExpandedSlots((prev) => ({
+      ...prev,
+      [cardKey]: !prev[cardKey],
+    }));
+  };
 
-    const capacityMatch = query.match(
-      /(?:at least|min(?:imum)?|for)\s*(\d+)\s*(?:people|persons|students|seats|members)?/i
-    );
-    const requestedCapacity = capacityMatch
-      ? Number(capacityMatch[1])
-      : null;
+  const handleBookRoomClick = (card, req) => {
+    setIsOpen(false);
+    const dateToBook = req.date || new Date().toISOString().slice(0, 10);
+    const startToBook = req.startTime || "14:00";
+    const endToBook = req.endTime || "17:00";
+    const attendeesCount = req.attendees?.max || req.attendees?.min || 40;
+    const title = req.eventType ? `${capitalize(req.eventType)}` : "Campus Reservation";
 
-    const equipmentTerms = [
-      "projector",
-      "whiteboard",
-      "computer",
-      "computers",
-      "microphone",
-      "mic",
-      "speaker",
-      "speakers",
-      "wifi",
-      "wi-fi",
-      "lab",
-      "air conditioning",
-      "ac",
-    ];
-
-    const requestedEquipment = equipmentTerms.filter((term) =>
-      query.includes(term)
-    );
-
-    const matchingRooms = rooms.filter((room) => {
-      if (
-        requestedCapacity &&
-        getRoomCapacity(room) < requestedCapacity
-      ) {
-        return false;
-      }
-
-      const equipment = getRoomEquipment(room);
-      const roomText = normalize(
-        `${getRoomName(room)} ${room?.type || ""} ${room?.description || ""}`
-      );
-
-      return requestedEquipment.every((term) => {
-        if (term === "computers") {
-          return equipment.includes("computer") || roomText.includes("computer");
-        }
-        if (term === "mic") {
-          return equipment.includes("microphone") || roomText.includes("microphone");
-        }
-        if (term === "wi-fi") {
-          return equipment.includes("wifi") || equipment.includes("wi-fi");
-        }
-        if (term === "ac") {
-          return equipment.includes("air conditioning") || equipment.includes("ac");
-        }
-
-        return equipment.includes(term) || roomText.includes(term);
-      });
+    navigate("/book", {
+      state: {
+        roomId: card.room.id,
+        date: dateToBook,
+        startTime: startToBook,
+        endTime: endToBook,
+        type: req.eventType === "exam" ? "exam" : "event",
+        title,
+        attendance: attendeesCount,
+        equipment: card.room.equipment || [],
+      },
     });
+  };
 
-    if (matchingRooms.length === 0) {
-      return {
-        text: "I couldn't find rooms matching those requirements in the current room list. Try a smaller capacity or fewer equipment requirements.",
-        action: { label: "Browse rooms", route: "/book" },
-      };
-    }
+  /**
+   * Generates response based on message and conversation state
+   */
+  const processUserMessage = async (userText) => {
+    const rawIntent = extractIntent(userText);
+    const extracted = extractEventDetails(userText, sessionContext);
 
-    const isTodayQuery =
-      query.includes("today") ||
-      query.includes("right now") ||
-      query.includes("currently") ||
-      query.includes("available now");
-
-    const resultLines = matchingRooms.slice(0, 8).map((room) => {
-      const roomBookings = approvedBookings.filter(
-        (booking) =>
-          String(getBookingRoomId(booking)) === String(room.id)
-      );
-
-      if (!isTodayQuery) {
-        const capacity = getRoomCapacity(room);
-        return `• ${getRoomName(room)}${
-          capacity ? ` — capacity ${capacity}` : ""
-        }`;
-      }
-
-      const now = new Date();
-      const nowPlusOneHour = new Date(now.getTime() + 60 * 60 * 1000);
-
-      const currentlyOccupied = roomBookings.some((booking) => {
-        const start = getBookingStart(booking);
-        const end = getBookingEnd(booking);
-
-        return (
-          start &&
-          end &&
-          overlaps(start, end, now.toISOString(), nowPlusOneHour.toISOString()) &&
-          new Date(start).getTime() <= now.getTime() &&
-          new Date(end).getTime() > now.getTime()
-        );
-      });
-
-      const bookingsToday = roomBookings.filter((booking) => {
-        const start = getBookingStart(booking);
-        const end = getBookingEnd(booking);
-
-        return (
-          start &&
-          end &&
-          isSameLocalDay(start, today) &&
-          new Date(end).getTime() > now.getTime()
-        );
-      });
-
-      const capacity = getRoomCapacity(room);
-      const capacityLabel = capacity ? ` — capacity ${capacity}` : "";
-
-      if (currentlyOccupied) {
-        const activeBooking = roomBookings.find((booking) => {
-          const start = getBookingStart(booking);
-          const end = getBookingEnd(booking);
-
-          return (
-            start &&
-            end &&
-            new Date(start).getTime() <= now.getTime() &&
-            new Date(end).getTime() > now.getTime()
-          );
-        });
-
-        return `• ${getRoomName(room)}${capacityLabel} — booked until ${formatTime(
-          getBookingEnd(activeBooking)
-        )}`;
-      }
-
-      if (bookingsToday.length > 0) {
-        const nextBooking = bookingsToday
-          .slice()
-          .sort(
-            (a, b) =>
-              new Date(getBookingStart(a)).getTime() -
-              new Date(getBookingStart(b)).getTime()
-          )[0];
-
-        return `• ${getRoomName(room)}${capacityLabel} — free now; next booking at ${formatTime(
-          getBookingStart(nextBooking)
-        )}`;
-      }
-
-      return `• ${getRoomName(room)}${capacityLabel} — no approved bookings listed for today`;
-    });
-
-    const intro = isTodayQuery
-      ? "Here are matching rooms and their current booking information:"
-      : "Here are rooms matching your requirements:";
-
-    const extra =
-      matchingRooms.length > 8
-        ? `\n…and ${matchingRooms.length - 8} more matching rooms.`
-        : "";
-
-    return {
-      text: `${intro}\n\n${resultLines.join("\n")}${extra}`,
-      action: { label: "Open room booking", route: "/book" },
+    // Update conversation context memory
+    const updatedContext = {
+      ...sessionContext,
+      eventType: extracted.eventType || sessionContext.eventType,
+      attendees: {
+        min: extracted.attendees.min ?? sessionContext.attendees.min,
+        max: extracted.attendees.max ?? sessionContext.attendees.max,
+      },
+      equipment: Array.from(new Set([...(sessionContext.equipment || []), ...(extracted.equipment || [])])),
+      date: extracted.date || sessionContext.date,
+      startTime: extracted.startTime || sessionContext.startTime,
+      endTime: extracted.endTime || sessionContext.endTime,
+      waitingFor: null,
     };
-  }
 
-  function buildReply(rawMessage) {
-    const query = normalize(rawMessage);
+    setSessionContext(updatedContext);
 
-    if (!query) {
-      return { text: "Type a question and I'll do my best to help." };
-    }
+    // 1. "What's free right now?" query
+    if (rawIntent === "check_availability" || /free right now|available now|vacant now/i.test(userText)) {
+      if (rooms.length === 0) {
+        return {
+          text: "I couldn't load rooms from the server. Please verify the backend is running.",
+        };
+      }
 
-    if (
-      /\b(hello|hi|hey|good morning|good afternoon|good evening)\b/.test(query)
-    ) {
+      const freeList = getCurrentlyFreeRooms(rooms, bookings, new Date());
+      const freeNow = freeList.filter((item) => item.isFreeNow);
+
+      if (freeNow.length === 0) {
+        return {
+          text: "All campus spaces currently have active reservations. Check back later or open the calendar to view future slots.",
+          action: { label: "View calendar", route: "/" },
+        };
+      }
+
+      const lines = freeNow.slice(0, 5).map((f) => {
+        return `• ${f.room.name} (${f.room.capacity} seats)\n  ${f.statusText}`;
+      });
+
       return {
-        text: "Hello! I can help you find rooms, check their listed bookings, and understand the booking process. What do you need?",
-      };
-    }
-
-    if (
-      query.includes("help") ||
-      query.includes("what can you do") ||
-      query.includes("capabilities")
-    ) {
-      return {
-        text: "I can help you:\n• Find rooms by capacity or equipment\n• Check today's approved booking information\n• See booking statuses\n• Navigate to the calendar or booking page\n\nTry asking: “Find a room for 30 people with a projector.”",
-      };
-    }
-
-    if (
-      query.includes("how do i book") ||
-      query.includes("how to book") ||
-      query.includes("book a room") ||
-      query.includes("reserve a room") ||
-      query === "booking"
-    ) {
-      return {
-        text: "To request a room, open Book Room, choose a space, enter the date and time, provide the required booking details, and submit your request. If approval is required, the request may remain pending until an authorized administrator reviews it.",
+        text: `Here are rooms free right now:\n\n${lines.join("\n\n")}${
+          freeNow.length > 5 ? `\n\n…and ${freeNow.length - 5} more spaces free.` : ""
+        }`,
         action: { label: "Book a room", route: "/book" },
       };
     }
 
-    if (
-      query.includes("calendar") ||
-      query.includes("schedule") ||
-      query.includes("timetable")
-    ) {
-      return {
-        text: "Open the SpaceSync Calendar to view scheduled campus bookings.",
-        action: { label: "Open calendar", route: "/" },
-      };
-    }
-
-    if (
-      query.includes("approval") ||
-      query.includes("pending request") ||
-      query.includes("review request")
-    ) {
-      return {
-        text: "Booking approvals are available to Venue Admin and Super Admin accounts. If your account has that role, use the Approvals tab in the navigation.",
-      };
-    }
-
-    if (
-      query.includes("my booking") ||
-      query.includes("booking status") ||
-      query.includes("reservation status") ||
-      query.includes("pending booking") ||
-      query.includes("approved booking") ||
-      query.includes("rejected booking")
-    ) {
+    // 2. Booking status check
+    if (/my booking|booking status|reservation status/i.test(userText)) {
       if (bookings.length === 0) {
         return {
-          text: "I couldn't find any bookings in the current data returned by the server. If you just submitted a request, check that the backend is running and refresh the chat.",
+          text: "No booking records were found in the database. Open the calendar to see all scheduled events.",
           action: { label: "Open calendar", route: "/" },
         };
       }
 
-      const statusFilter = query.includes("pending")
-        ? "pending"
-        : query.includes("approved")
-          ? "approved"
-          : query.includes("rejected")
-            ? "rejected"
-            : null;
-
-      const relevantBookings = bookings.filter((booking) =>
-        statusFilter
-          ? getBookingStatus(booking) === statusFilter
-          : true
-      );
-
-      if (relevantBookings.length === 0) {
-        return {
-          text: statusFilter
-            ? `There are no bookings with status "${getDisplayStatus(statusFilter)}" in the current booking data.`
-            : "No bookings were found.",
-          action: { label: "Open calendar", route: "/" },
-        };
-      }
-
-      const lines = relevantBookings.slice(0, 6).map((booking) => {
-        const room = rooms.find(
-          (item) =>
-            String(item.id) === String(getBookingRoomId(booking))
-        );
-
-        const start = getBookingStart(booking);
-        const status = getDisplayStatus(getBookingStatus(booking));
-
-        return `• ${booking.title || "Room booking"} — ${
-          room ? getRoomName(room) : `Room ${getBookingRoomId(booking) ?? "unknown"}`
-        }\n  ${start ? formatDate(start) + " at " + formatTime(start) : "Date not specified"} — ${status}`;
+      const recentBookings = bookings.slice(-5).reverse();
+      const lines = recentBookings.map((b) => {
+        const room = rooms.find((r) => String(r.id) === String(b.roomId ?? b.room_id));
+        const roomName = room ? room.name : `Room ${b.roomId ?? b.room_id}`;
+        const startStr = b.start ?? b.start_time;
+        const timePart = startStr ? formatDateDisplay(startStr.slice(0, 10)) + " " + formatTime12(startStr.slice(11, 16)) : "";
+        return `• ${b.title || "Booking"} (${roomName})\n  ${timePart} — Status: ${b.status}`;
       });
 
       return {
-        text: `Here are the booking records currently available to the assistant:\n\n${lines.join(
-          "\n\n"
-        )}${relevantBookings.length > 6 ? "\n\nShowing the first 6 records." : ""}\n\nNote: this lists server booking records and may include bookings from other users.`,
+        text: `Here are the latest bookings on record:\n\n${lines.join("\n\n")}`,
         action: { label: "View calendar", route: "/" },
       };
     }
 
-    if (
-      query.includes("available room") ||
-      query.includes("availability") ||
-      query.includes("free room") ||
-      query.includes("room for") ||
-      query.includes("projector") ||
-      query.includes("whiteboard") ||
-      query.includes("capacity") ||
-      query.includes("seats") ||
-      query.includes("people") ||
-      query.includes("today") ||
-      query.includes("available now")
-    ) {
-      if (rooms.length === 0) {
-        return {
-          text: "The room list isn't loaded yet. Please wait a moment and try again.",
-          action: { label: "Browse rooms", route: "/book" },
-        };
-      }
-
-      return getAvailabilityMessage(query);
-    }
-
-    if (
-      query.includes("insight") ||
-      query.includes("analytics") ||
-      query.includes("utilization") ||
-      query.includes("report")
-    ) {
+    // 3. How to book guidance
+    if (rawIntent === "how_to") {
       return {
-        text: "SpaceSync Insights provides overview and analytics for authorized roles. Availability of that page depends on your account role.",
-        action: { label: "Open calendar", route: "/" },
+        text: "Booking a campus room in SpaceSync is simple:\n\n1. Go to the Book Room page.\n2. Pick your desired hall and date/time.\n3. Enter the attendee count and equipment.\n4. Submit your request. It will be reviewed by an authorized administrator.",
+        action: { label: "Book a room", route: "/book" },
       };
     }
 
+    // 4. Case 2: User doesn't know requirements ("I don't know what I need", "Plan my event")
+    if (rawIntent === "plan_event" || (!extracted.attendees.max && /coding workshop|workshop|seminar|hackathon/i.test(userText) && /don'?t know/i.test(userText))) {
+      const typeKey = updatedContext.eventType || "workshop";
+      const profile = getEventProfile(typeKey);
+
+      // Assume typical requirements if not provided
+      const assumedAttendees = updatedContext.attendees.max || updatedContext.attendees.min || profile.typicalSeats.max;
+      const assumedDate = updatedContext.date || new Date().toISOString().slice(0, 10);
+      const assumedStart = updatedContext.startTime || "14:00";
+      const assumedEnd = updatedContext.endTime || "17:00";
+      const assumedEquip = Array.from(new Set([...(updatedContext.equipment || []), ...profile.neededEquipment]));
+
+      const effectiveReq = {
+        eventType: typeKey,
+        attendees: { min: Math.round(assumedAttendees * 0.8), max: assumedAttendees },
+        equipment: assumedEquip,
+        date: assumedDate,
+        startTime: assumedStart,
+        endTime: assumedEnd,
+      };
+
+      const topRooms = recommendRooms({
+        rooms,
+        bookings,
+        request: effectiveReq,
+        now: new Date(),
+      });
+
+      return {
+        text: `Here is a planning guide for a **${profile.label}**:\n\n` +
+          `• **Seating & Layout:** ${profile.layoutTip}\n` +
+          `• **Duration:** ${profile.durationHint}\n` +
+          `• **Essential Equipment:** ${profile.neededEquipment.map((e) => e.replace("_", " ")).join(", ")}\n` +
+          `• **Helpful Advice:** ${profile.notes[0]} ${profile.notes[1]}\n\n` +
+          `I assumed an attendance of **${assumedAttendees} students** on **${formatDateDisplay(assumedDate)}** from **${formatTime12(assumedStart)} to ${formatTime12(assumedEnd)}**. Here are the best-fit halls:`,
+        recommendations: topRooms,
+        requestSnapshot: effectiveReq,
+        quickReplies: ["Add a mic", "Need AC", "Change time", "Change attendees"],
+        approvalHint: "This request may need approval from faculty or a venue administrator.",
+      };
+    }
+
+    // 5. Case 1: Room recommendation inquiry
+    if (rawIntent === "find_room" || updatedContext.eventType || updatedContext.attendees.max) {
+      // Check for missing vital information - ask ONE short question at a time
+      if (!updatedContext.attendees.max && !updatedContext.attendees.min) {
+        setSessionContext((prev) => ({ ...prev, waitingFor: "attendees" }));
+        return {
+          text: `How many attendees are you expecting for the ${updatedContext.eventType ? updatedContext.eventType.replace("_", " ") : "event"}?`,
+          quickReplies: ["Around 30", "Around 60", "Around 100", "50 to 100"],
+        };
+      }
+
+      if (!updatedContext.date && !updatedContext.startTime) {
+        setSessionContext((prev) => ({ ...prev, waitingFor: "time" }));
+        return {
+          text: "What date and time would you like to schedule the event?",
+          quickReplies: ["Tomorrow 2 to 5 PM", "This Saturday 2 to 5 PM", "Today afternoon"],
+        };
+      }
+
+      // We have sufficient criteria: execute multi-factor scoring
+      const topRooms = recommendRooms({
+        rooms,
+        bookings,
+        request: updatedContext,
+        now: new Date(),
+      });
+
+      if (topRooms.length === 0) {
+        return {
+          text: "I couldn't find any campus facilities matching those requirements. Try adjusting the crowd size, choosing a different time slot, or splitting across multiple rooms.",
+          quickReplies: ["What's free right now?", "Plan my event"],
+        };
+      }
+
+      const attendeesLabel = updatedContext.attendees.min && updatedContext.attendees.max && updatedContext.attendees.min !== updatedContext.attendees.max
+        ? `${updatedContext.attendees.min}-${updatedContext.attendees.max}`
+        : updatedContext.attendees.max || updatedContext.attendees.min || "your";
+
+      const timeLabel = updatedContext.startTime && updatedContext.endTime
+        ? ` for ${formatDateDisplay(updatedContext.date)} (${formatTime12(updatedContext.startTime)} - ${formatTime12(updatedContext.endTime)})`
+        : "";
+
+      return {
+        text: `Here are the top 3 recommended halls for **${attendeesLabel} attendees**${timeLabel}:`,
+        recommendations: topRooms,
+        requestSnapshot: updatedContext,
+        quickReplies: ["Check another time", "Add equipment", "What's free right now?"],
+        approvalHint: "This request may need approval from faculty or a venue administrator.",
+      };
+    }
+
+    // Fallback general guidance
     return {
-      text: "I can help with room availability, capacity, equipment, booking steps, booking statuses, and navigation. Try “Find a room for 25 people with a projector” or “Show available rooms today.”",
+      text: "I can recommend suitable campus halls, check room availability, or guide your event setup.\n\nTry asking:\n• “Seminar on Saturday 2 to 5 PM for 50 to 100 students with a projector and mic”\n• “Coding workshop for 80 students, what do I need?”\n• “What's free right now?”",
+      quickReplies: BASE_QUICK_PROMPTS,
     };
-  }
+  };
 
-  function sendMessage(text = input) {
-    const cleanText = String(text || "").trim();
+  const sendMessage = async (customText = null) => {
+    const textToSend = String(customText || input || "").trim();
+    if (!textToSend) return;
 
-    if (!cleanText) return;
-
-    addMessage("user", cleanText);
     setInput("");
+    addMessage({ sender: "user", text: textToSend });
+    setIsTyping(true);
 
-    const reply = buildReply(cleanText);
+    try {
+      const response = await processUserMessage(textToSend);
 
-    window.setTimeout(() => {
-      addMessage("bot", reply.text, reply.action || null);
-    }, 180);
-  }
+      // Optional AI natural language smoothing (falls back to rule-based response)
+      const refinedText = await enhanceReply({
+        draftText: response.text,
+        userMessage: textToSend,
+        context: sessionContext,
+      });
 
-  function handleSubmit(event) {
-    event.preventDefault();
+      setTimeout(() => {
+        setIsTyping(false);
+        addMessage({
+          sender: "bot",
+          text: refinedText,
+          recommendations: response.recommendations || null,
+          requestSnapshot: response.requestSnapshot || null,
+          action: response.action || null,
+          quickReplies: response.quickReplies || null,
+          approvalHint: response.approvalHint || null,
+        });
+      }, 350);
+    } catch (err) {
+      setIsTyping(false);
+      addMessage({
+        sender: "bot",
+        text: "I ran into a problem checking campus rooms. Please make sure the backend server is running and try again.",
+      });
+    }
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
     sendMessage();
-  }
+  };
 
   return (
     <>
-      {/* Floating assistant launcher */}
+      {/* Floating assistant launcher button */}
       <button
         type="button"
-        onClick={() => setIsOpen((open) => !open)}
-        aria-label={isOpen ? "Close SpaceSync assistant" : "Open SpaceSync assistant"}
+        onClick={() => setIsOpen((prev) => !prev)}
+        aria-label={isOpen ? "Close SpaceSync Assistant" : "Open SpaceSync Assistant"}
         aria-expanded={isOpen}
-        className="fixed bottom-5 right-5 z-[60] flex h-14 w-14 items-center justify-center rounded-full bg-[#4F46E5] text-white shadow-xl transition hover:bg-[#4338CA] hover:scale-105 focus:outline-none focus:ring-4 focus:ring-indigo-300"
+        className="fixed bottom-5 right-5 z-[60] flex h-14 w-14 items-center justify-center rounded-full bg-[#4F46E5] text-white shadow-xl transition-all duration-150 hover:bg-[#4338CA] hover:scale-105 focus:outline-none focus:ring-4 focus:ring-indigo-300"
       >
         <span className="material-symbols-outlined text-[27px]">
           {isOpen ? "close" : "smart_toy"}
         </span>
       </button>
 
-      {/* Chat panel */}
+      {/* Assistant Window */}
       {isOpen && (
         <section
           aria-label="SpaceSync assistant chat"
-          className="fixed bottom-24 right-4 sm:right-5 z-[60] flex h-[min(620px,calc(100vh-8rem))] w-[min(390px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          className="fixed bottom-24 right-4 sm:right-5 z-[60] flex h-[min(640px,calc(100vh-7.5rem))] w-[min(410px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl font-['Inter',sans-serif]"
         >
           {/* Header */}
-          <div className="flex items-center justify-between bg-[#0F172A] px-4 py-4 text-white">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#4F46E5]">
-                <span className="material-symbols-outlined text-[23px]">
+          <div className="flex items-center justify-between bg-[#0F172A] px-4 py-3.5 text-white shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#4F46E5] text-white">
+                <span className="material-symbols-outlined text-[20px]">
                   smart_toy
                 </span>
               </div>
-
               <div>
-                <h2 className="text-sm font-bold">SpaceSync Assistant</h2>
-                <p className="mt-0.5 text-xs text-slate-300">
-                  Campus space helper
+                <h2 className="text-sm font-semibold tracking-tight font-['Plus_Jakarta_Sans',sans-serif]">
+                  SpaceSync Assistant
+                </h2>
+                <p className="text-[11px] text-slate-300">
+                  Room recommendations & planning
                 </p>
               </div>
             </div>
@@ -577,61 +428,235 @@ export default function SpaceSyncChatbot() {
               type="button"
               onClick={() => setIsOpen(false)}
               aria-label="Close chat"
-              className="rounded-lg p-1.5 text-slate-300 transition hover:bg-slate-700 hover:text-white"
+              className="rounded-lg p-1 text-slate-300 hover:bg-slate-800 hover:text-white transition"
             >
-              <span className="material-symbols-outlined">close</span>
+              <span className="material-symbols-outlined text-[20px]">close</span>
             </button>
           </div>
 
-          {/* Messages */}
-          <div className="flex-1 space-y-4 overflow-y-auto bg-slate-50 p-4">
+          {/* Messages Area */}
+          <div className="flex-1 space-y-3.5 overflow-y-auto bg-slate-50 p-3.5 text-xs sm:text-sm">
             {dataError && (
-              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800">
                 {dataError}
               </div>
             )}
 
-            {messages.map((message) => (
+            {messages.map((msg) => (
               <div
-                key={message.id}
-                className={`flex ${
-                  message.sender === "user" ? "justify-end" : "justify-start"
+                key={msg.id}
+                className={`flex flex-col ${
+                  msg.sender === "user" ? "items-end" : "items-start"
                 }`}
               >
+                {/* Bubble */}
                 <div
-                  className={`max-w-[90%] rounded-2xl px-3.5 py-3 text-sm leading-relaxed ${
-                    message.sender === "user"
-                      ? "rounded-br-md bg-[#4F46E5] text-white"
-                      : "rounded-bl-md border border-slate-200 bg-white text-slate-700 shadow-sm"
+                  className={`max-w-[92%] rounded-xl px-3.5 py-2.5 leading-relaxed ${
+                    msg.sender === "user"
+                      ? "rounded-br-sm bg-[#4F46E5] text-white"
+                      : "rounded-bl-sm border border-slate-200 bg-white text-slate-800 shadow-2xs"
                   }`}
                 >
-                  <p className="whitespace-pre-line">{message.text}</p>
+                  <p className="whitespace-pre-line text-xs sm:text-[13px]">
+                    {msg.text}
+                  </p>
 
-                  {message.action && (
+                  {/* Simple action link */}
+                  {msg.action && (
                     <button
                       type="button"
                       onClick={() => {
                         setIsOpen(false);
-                        navigate(message.action.route);
+                        navigate(msg.action.route);
                       }}
-                      className={`mt-3 inline-flex items-center gap-1 rounded-lg px-3 py-2 text-xs font-semibold transition ${
-                        message.sender === "user"
-                          ? "bg-white/15 text-white hover:bg-white/25"
-                          : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
-                      }`}
+                      className="mt-2.5 inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition"
                     >
-                      {message.action.label}
-                      <span className="material-symbols-outlined text-[15px]">
+                      {msg.action.label}
+                      <span className="material-symbols-outlined text-[14px]">
                         arrow_forward
                       </span>
                     </button>
                   )}
                 </div>
+
+                {/* Recommendation Room Cards */}
+                {msg.recommendations && msg.recommendations.length > 0 && (
+                  <div className="mt-2.5 w-full space-y-2.5">
+                    {msg.recommendations.map((card, idx) => {
+                      const cardKey = `${msg.id}-card-${card.room.id}`;
+                      const isExpanded = !!expandedSlots[cardKey];
+
+                      return (
+                        <div
+                          key={cardKey}
+                          className="rounded-xl border border-slate-200 bg-white p-3 shadow-2xs space-y-2 text-slate-800"
+                        >
+                          {/* Card Header: Room Name, Capacity, and Status Badge */}
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-semibold text-xs sm:text-sm text-slate-900">
+                                  {card.room.name}
+                                </span>
+                                <span className="text-[11px] font-medium text-slate-500">
+                                  · {card.room.capacity} seats
+                                </span>
+                              </div>
+                              <span className="text-[10px] text-indigo-600 font-semibold uppercase tracking-wider">
+                                #{idx + 1} Best Match · {card.score}% Fit
+                              </span>
+                            </div>
+
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                                card.isFree
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                  : "bg-rose-50 text-rose-700 border-rose-200"
+                              }`}
+                            >
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full ${
+                                  card.isFree ? "bg-emerald-500" : "bg-rose-500"
+                                }`}
+                              />
+                              {card.isFree ? "Free" : "Busy"}
+                            </span>
+                          </div>
+
+                          {/* Equipment Tags */}
+                          {card.room.equipment && card.room.equipment.length > 0 && (
+                            <div className="flex flex-wrap gap-1">
+                              {card.room.equipment.map((eq) => (
+                                <span
+                                  key={eq}
+                                  className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 font-medium"
+                                >
+                                  {eq.replace("_", " ")}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Reasons & Warnings */}
+                          <div className="space-y-1 text-[11px] text-slate-600 pt-0.5">
+                            {card.reasons.map((r, rIdx) => (
+                              <div key={rIdx} className="flex items-start gap-1 text-slate-600">
+                                <span className="text-emerald-600 text-xs shrink-0 font-bold">✓</span>
+                                <span>{r}</span>
+                              </div>
+                            ))}
+                            {card.warnings.map((w, wIdx) => (
+                              <div key={wIdx} className="flex items-start gap-1 text-amber-700">
+                                <span className="text-amber-500 text-xs shrink-0 font-bold">⚠</span>
+                                <span>{w}</span>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Alternative Free Slots toggle list */}
+                          {isExpanded && (
+                            <div className="rounded-lg bg-slate-50 p-2 text-[11px] border border-slate-200 space-y-1">
+                              <span className="font-semibold text-slate-700 block text-[10px] uppercase tracking-wider">
+                                Available Time Windows:
+                              </span>
+                              {card.nextFreeSlots && card.nextFreeSlots.length > 0 ? (
+                                card.nextFreeSlots.map((slot, sIdx) => (
+                                  <div key={sIdx} className="flex items-center justify-between text-slate-600">
+                                    <span>{slot.label}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const reqSnapshot = msg.requestSnapshot || sessionContext;
+                                        setIsOpen(false);
+                                        navigate("/book", {
+                                          state: {
+                                            roomId: card.room.id,
+                                            date: reqSnapshot.date || new Date().toISOString().slice(0, 10),
+                                            startTime: slot.start,
+                                            endTime: slot.end,
+                                            type: reqSnapshot.eventType === "exam" ? "exam" : "event",
+                                            title: reqSnapshot.eventType ? `${capitalize(reqSnapshot.eventType)}` : "Campus Reservation",
+                                            attendance: reqSnapshot.attendees?.max || reqSnapshot.attendees?.min || 40,
+                                            equipment: card.room.equipment || [],
+                                          },
+                                        });
+                                      }}
+                                      className="text-indigo-600 hover:underline font-semibold text-[10px]"
+                                    >
+                                      Select
+                                    </button>
+                                  </div>
+                                ))
+                              ) : (
+                                <p className="text-slate-400 text-[10px]">
+                                  No alternative 2-hour blocks open during campus operating hours (08:00–18:00).
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Card Action Buttons */}
+                          <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                            <button
+                              type="button"
+                              onClick={() => handleBookRoomClick(card, msg.requestSnapshot || sessionContext)}
+                              className="flex-1 rounded-md bg-[#4F46E5] py-1.5 px-2 text-center text-xs font-semibold text-white hover:bg-[#4338CA] transition"
+                            >
+                              Book this room
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => toggleFreeSlots(cardKey)}
+                              className="rounded-md border border-slate-200 bg-white py-1.5 px-2.5 text-center text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
+                            >
+                              {isExpanded ? "Hide times" : "See free times"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {/* Hedged Approval Hint */}
+                    {msg.approvalHint && (
+                      <p className="text-[10px] text-slate-400 italic px-1">
+                        ℹ {msg.approvalHint}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Quick-reply chips */}
+                {msg.quickReplies && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {msg.quickReplies.map((chip) => (
+                      <button
+                        key={chip}
+                        type="button"
+                        onClick={() => sendMessage(chip)}
+                        className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 transition"
+                      >
+                        {chip}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
 
+            {/* Typing indicator */}
+            {isTyping && (
+              <div className="flex justify-start">
+                <div className="flex items-center gap-1 rounded-xl rounded-bl-sm border border-slate-200 bg-white px-3.5 py-2.5 shadow-2xs">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0.2s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0.4s]" />
+                </div>
+              </div>
+            )}
+
             {loadingData && (
-              <p className="text-center text-xs text-slate-400">
+              <p className="text-center text-[11px] text-slate-400">
                 Connecting to campus spaces…
               </p>
             )}
@@ -639,15 +664,15 @@ export default function SpaceSyncChatbot() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Suggested prompts */}
+          {/* Quick-reply prompt drawer on clean chat start */}
           {messages.length <= 2 && (
-            <div className="flex gap-2 overflow-x-auto border-t border-slate-100 bg-white px-3 py-3">
-              {QUICK_PROMPTS.map((prompt) => (
+            <div className="flex gap-1.5 overflow-x-auto border-t border-slate-100 bg-white p-2.5 shrink-0">
+              {BASE_QUICK_PROMPTS.map((prompt) => (
                 <button
                   key={prompt}
                   type="button"
                   onClick={() => sendMessage(prompt)}
-                  className="shrink-0 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700"
+                  className="shrink-0 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 transition"
                 >
                   {prompt}
                 </button>
@@ -655,34 +680,34 @@ export default function SpaceSyncChatbot() {
             </div>
           )}
 
-          {/* Input */}
+          {/* Input Form */}
           <form
             onSubmit={handleSubmit}
-            className="flex items-center gap-2 border-t border-slate-200 bg-white p-3"
+            className="flex items-center gap-2 border-t border-slate-200 bg-white p-2.5 shrink-0"
           >
             <input
               ref={inputRef}
               type="text"
               value={input}
-              onChange={(event) => setInput(event.target.value)}
-              placeholder="Ask about campus rooms…"
-              aria-label="Message the SpaceSync assistant"
-              className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Ask about halls, event requirements…"
+              aria-label="Message the SpaceSync Assistant"
+              className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300"
             />
 
             <button
               type="submit"
               disabled={!input.trim()}
               aria-label="Send message"
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#4F46E5] text-white transition hover:bg-[#4338CA] disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#4F46E5] text-white hover:bg-[#4338CA] transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <span className="material-symbols-outlined">send</span>
+              <span className="material-symbols-outlined text-[18px]">send</span>
             </button>
           </form>
 
-          <p className="bg-white px-3 pb-2 text-center text-[10px] text-slate-400">
-            Prototype assistant · Verify important booking details in the app
-          </p>
+          <div className="bg-white px-3 pb-2 text-center text-[10px] text-slate-400 shrink-0">
+            SpaceSync Assistant · Real-time campus room recommendations
+          </div>
         </section>
       )}
     </>
