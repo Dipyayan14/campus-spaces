@@ -20,6 +20,7 @@ import Calendar from "./pages/Calendar";
 import BookRoom from "./pages/BookRoom";
 import Approvals from "./pages/Approvals";
 import Insights from "./pages/Insights";
+import MaintenanceLog from "./pages/MaintenanceLog";
 
 /**
  * Requires authentication and provides the shared application layout.
@@ -104,6 +105,16 @@ export default function App() {
               allowedRoles={["super_admin", "exam_cell", "admin"]}
             >
               <Insights />
+            </RoleRoute>
+          }
+        />
+
+        {/* Maintenance log for Faculty, Venue Admin, and Super Admin */}
+        <Route
+          path="/maintenance-log"
+          element={
+            <RoleRoute allowedRoles={["faculty", "venue_admin", "super_admin", "admin"]}>
+              <MaintenanceLog />
             </RoleRoute>
           }
         />

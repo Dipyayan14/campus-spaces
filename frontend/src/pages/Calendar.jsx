@@ -4,7 +4,7 @@
 // FullCalendar v7 integration with custom event cards, Today's Occupancy sidebar widget,
 // and real-time Pending Requests queue.
 
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/react/daygrid";
@@ -16,7 +16,19 @@ import "@fullcalendar/react/skeleton.css";
 import "@fullcalendar/react/themes/classic/theme.css";
 import "@fullcalendar/react/themes/classic/palette.css";
 
-import { getRooms, getBookings } from "../api";
+import {
+  getRooms,
+  getBookings,
+  getMaintenanceLogs,
+  subscribeToChanges,
+} from "../api";
+import { useAuth } from "../context/AuthContext";
+import { useNow } from "../hooks/useNow";
+import {
+  getRoomOccupancy,
+  getRoomStatus,
+  getCampusSummary,
+} from "../utils/occupancy";
 
 // Visual token mapping matching Stitch design specs exactly
 const TYPE_SPECS = {
@@ -72,10 +84,19 @@ export default function Calendar() {
   const location = useLocation();
   const alertMessage = location.state?.error;
 
+  const { user } = useAuth();
+  const now = useNow(30000);
+  const canAccessMaintenance =
+    user?.role === "faculty" ||
+    user?.role === "venue_admin" ||
+    user?.role === "super_admin" ||
+    user?.role === "admin";
+
   const calendarRef = useRef(null);
 
   const [rooms, setRooms] = useState([]);
   const [bookings, setBookings] = useState([]);
+  const [maintenanceLogs, setMaintenanceLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -83,45 +104,46 @@ export default function Calendar() {
   const [selectedRoom, setSelectedRoom] = useState("all");
   const [includePending, setIncludePending] = useState(true);
   const [activeView, setActiveView] = useState("timeGridWeek");
-  const [currentDateTitle, setCurrentDateTitle] = useState("Nov 02 – Nov 08, 2026");
+  const [currentDateTitle, setCurrentDateTitle] = useState(() =>
+    new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+  );
 
   // Event modal state
   const [selectedEvent, setSelectedEvent] = useState(null);
 
-  // Load rooms and bookings through centralized api.js service
-  useEffect(() => {
-    let isMounted = true;
-    async function loadData() {
-      setLoading(true);
-      setError(null);
-      try {
-        const [roomsData, bookingsData] = await Promise.all([
-          getRooms(),
-          getBookings(),
-        ]);
-        if (isMounted) {
-          setRooms(roomsData);
-          setBookings(bookingsData);
-        }
-      } catch (err) {
-        if (isMounted) {
-          setError(err.message || "Failed to load campus schedule. Please retry.");
-        }
-      } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
-      }
+  // Load rooms, bookings and maintenance logs through centralized api.js service
+  const loadData = useCallback(async () => {
+    try {
+      const [roomsData, bookingsData, logsData] = await Promise.all([
+        getRooms(),
+        getBookings(),
+        getMaintenanceLogs(),
+      ]);
+      setRooms(roomsData);
+      setBookings(bookingsData);
+      setMaintenanceLogs(logsData);
+    } catch (err) {
+      setError(err.message || "Failed to load campus schedule. Please retry.");
+    } finally {
+      setLoading(false);
     }
-    loadData();
-    return () => {
-      isMounted = false;
-    };
   }, []);
 
+  useEffect(() => {
+    loadData();
+    const unsubscribe = subscribeToChanges(() => {
+      loadData();
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [loadData]);
+
   // Sync toolbar title when view changes
-  const updateTitleFromCalendar = () => {
-    if (calendarRef.current) {
+  const updateTitleFromCalendar = (arg) => {
+    if (arg?.view?.title) {
+      setCurrentDateTitle(arg.view.title);
+    } else if (calendarRef.current) {
       const api = calendarRef.current.getApi();
       setCurrentDateTitle(api.view.title);
     }
@@ -280,12 +302,23 @@ export default function Calendar() {
     return bookings.filter((b) => b.status === "pending");
   }, [bookings]);
 
-  const occupancyRate = useMemo(() => {
-    if (!rooms.length) return 78;
-    const approvedCount = bookings.filter((b) => b.status === "approved").length;
-    const totalSlots = rooms.length * 4;
-    return Math.min(Math.round((approvedCount / totalSlots) * 100) + 40, 92);
-  }, [rooms, bookings]);
+  const formattedUpdatedTime = useMemo(() => {
+    return now.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  }, [now]);
+
+  const campusSummary = useMemo(() => {
+    return getCampusSummary(rooms, bookings, now);
+  }, [rooms, bookings, now]);
+
+  const openMaintenanceCount = useMemo(() => {
+    return maintenanceLogs.filter(
+      (m) => m.status === "open" || m.status === "in_progress"
+    ).length;
+  }, [maintenanceLogs]);
 
   return (
     <div className="w-full max-w-[1440px] mx-auto px-4 sm:px-8 py-5 flex flex-col gap-4 font-['Inter',sans-serif]">
@@ -535,7 +568,7 @@ export default function Calendar() {
                   classicThemePlugin,
                 ]}
                 initialView="timeGridWeek"
-                initialDate="2026-11-02" // Matches existing mockData bookings
+                // Opens to current week by default
                 headerToolbar={false} // Handled by our custom Stitch header toolbar
                 events={calendarEvents}
                 eventContent={renderEventContent}
@@ -562,10 +595,15 @@ export default function Calendar() {
               <h3 className="font-['Plus_Jakarta_Sans',sans-serif] font-bold text-sm text-[#0B1C30]">
                 Today's Occupancy
               </h3>
-              <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Live
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-slate-400">
+                  Updated {formattedUpdatedTime}
+                </span>
+                <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Live
+                </span>
+              </div>
             </div>
 
             {/* Radial Donut Progress */}
@@ -584,17 +622,17 @@ export default function Calendar() {
                     className="text-[#4F46E5] stroke-current"
                     d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
                     fill="none"
-                    strokeDasharray={`${occupancyRate}, 100`}
+                    strokeDasharray={`${campusSummary.activePercent}, 100`}
                     strokeLinecap="round"
                     strokeWidth="3.5"
                   />
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <span className="text-xs font-bold text-slate-800">
-                    {occupancyRate}%
+                    {campusSummary.activePercent}%
                   </span>
                   <span className="text-[7px] text-slate-400 font-bold uppercase">
-                    Active
+                    ACTIVE
                   </span>
                 </div>
               </div>
@@ -604,11 +642,25 @@ export default function Calendar() {
                   Campus Concurrency
                 </span>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  {bookings.filter((b) => b.status === "approved").length} active bookings confirmed.
+                  {campusSummary.activeNow.length} active bookings confirmed.
                 </p>
-                <span className="text-[10px] text-emerald-600 font-bold inline-block mt-0.5">
-                  +4% vs last week
-                </span>
+                {campusSummary.trendPercent === null ? (
+                  <span className="text-[10px] text-slate-400 font-medium inline-block mt-0.5">
+                    No data for last week
+                  </span>
+                ) : campusSummary.trendPercent > 0 ? (
+                  <span className="text-[10px] text-emerald-600 font-bold inline-block mt-0.5">
+                    +{campusSummary.trendPercent}% vs last week
+                  </span>
+                ) : campusSummary.trendPercent < 0 ? (
+                  <span className="text-[10px] text-red-600 font-bold inline-block mt-0.5">
+                    {campusSummary.trendPercent}% vs last week
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-slate-500 font-bold inline-block mt-0.5">
+                    0% vs last week
+                  </span>
+                )}
               </div>
             </div>
 
@@ -618,10 +670,11 @@ export default function Calendar() {
                 Key Facilities Utilization
               </span>
 
-              {rooms.map((room, idx) => {
-                const colors = ["#DC2626", "#059669", "#2563EB", "#EA580C"];
-                const barColor = colors[idx % colors.length];
-                const pct = [92, 65, 84, 40][idx % 4] || 70;
+              {rooms.map((room) => {
+                const pct = getRoomOccupancy(room, bookings, now);
+                const statusText = getRoomStatus(room, bookings, now);
+                const barColor =
+                  pct < 50 ? "#10B981" : pct <= 80 ? "#F59E0B" : "#EF4444";
 
                 return (
                   <div key={room.id} className="space-y-1">
@@ -639,21 +692,35 @@ export default function Calendar() {
                         style={{ width: `${pct}%`, backgroundColor: barColor }}
                       />
                     </div>
-                    <div className="flex justify-between text-[10px] text-slate-400">
-                      <span>Cap: {room.capacity} seats</span>
-                      <span>Scheduled</span>
+                    <div className="flex justify-between items-center text-[10px] text-slate-400 pt-0.5">
+                      <span className="shrink-0">Cap: {room.capacity} seats</span>
+                      <span
+                        className="truncate max-w-[170px] text-right font-medium text-slate-600"
+                        title={statusText}
+                      >
+                        {statusText}
+                      </span>
                     </div>
                   </div>
                 );
               })}
             </div>
 
-            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
-              <span className="text-slate-500">Facility Maintenance</span>
-              <span className="font-bold text-[#4F46E5] cursor-pointer hover:underline text-[11px]">
-                View Log
-              </span>
-            </div>
+            {canAccessMaintenance && (
+              <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span className="text-slate-500">
+                  Facility Maintenance - {openMaintenanceCount} open
+                </span>
+                <a
+                  href="/maintenance-log"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-bold text-[#4F46E5] hover:underline text-[11px]"
+                >
+                  View Log
+                </a>
+              </div>
+            )}
           </div>
 
           {/* Pending Requests Queue Card */}
