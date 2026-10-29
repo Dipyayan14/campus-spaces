@@ -14,13 +14,28 @@ from workflow_service import get_workflow_state
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialize_database()
+
+    # Safe, additive migration. Existing booking records are preserved.
+    with get_connection() as connection:
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(bookings)"
+            ).fetchall()
+        }
+
+        if "requested_by" not in columns:
+            connection.execute(
+                "ALTER TABLE bookings ADD COLUMN requested_by TEXT"
+            )
+
     yield
 
 
 app = FastAPI(
     title="SpaceSync AI API",
     description="Campus room booking and availability backend",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -29,6 +44,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ],
@@ -38,12 +55,16 @@ app.add_middleware(
 )
 
 
+ALLOWED_BOOKING_TYPES = {"event", "exam", "class", "lab"}
+
+
 class BookingRequest(BaseModel):
     room_id: int
     title: str = Field(min_length=1, max_length=150)
     start_time: datetime
     end_time: datetime
     booking_type: str = "event"
+    requested_by: str = Field(default="Campus Member", max_length=150)
 
 
 class BookingStatusUpdate(BaseModel):
@@ -69,7 +90,11 @@ def check_time_range(start_time: datetime, end_time: datetime):
 
 
 def find_conflict(
-    connection, room_id, start_time, end_time, exclude_id=None
+    connection,
+    room_id,
+    start_time,
+    end_time,
+    exclude_id=None,
 ):
     query = """
         SELECT id, title, start_time, end_time, status, booking_type
@@ -79,7 +104,11 @@ def find_conflict(
           AND start_time < ?
           AND end_time > ?
     """
-    params = [room_id, end_time.isoformat(), start_time.isoformat()]
+    params = [
+        room_id,
+        end_time.isoformat(),
+        start_time.isoformat(),
+    ]
 
     if exclude_id is not None:
         query += " AND id != ?"
@@ -89,7 +118,7 @@ def find_conflict(
 
 
 def booking_to_dict(row):
-    booking = {
+    result = {
         "id": row["id"],
         "room_id": row["room_id"],
         "title": row["title"],
@@ -97,15 +126,20 @@ def booking_to_dict(row):
         "end_time": row["end_time"],
         "booking_type": row["booking_type"],
         "status": row["status"],
+        "requested_by": (
+            row["requested_by"]
+            if "requested_by" in row.keys() and row["requested_by"]
+            else "Campus Member"
+        ),
     }
 
     if "submitted_at" in row.keys() and row["submitted_at"]:
-        booking["workflow"] = get_workflow_state(
+        result["workflow"] = get_workflow_state(
             submitted_at=row["submitted_at"],
             start_time=row["start_time"],
         )
 
-    return booking
+    return result
 
 
 @app.get("/")
@@ -132,7 +166,7 @@ def get_bookings():
         rows = connection.execute(
             """
             SELECT id, room_id, title, start_time, end_time,
-                   booking_type, status, submitted_at
+                   booking_type, status, submitted_at, requested_by
             FROM bookings
             ORDER BY start_time
             """
@@ -143,10 +177,19 @@ def get_bookings():
 
 @app.post("/bookings", status_code=201)
 def create_booking(booking: BookingRequest):
-    if booking.booking_type not in ("event", "exam"):
+    booking_type = booking.booking_type.strip().lower()
+
+    if booking_type not in ALLOWED_BOOKING_TYPES:
         raise HTTPException(
             status_code=400,
-            detail="booking_type must be 'event' or 'exam'.",
+            detail="Booking type must be event, exam, class, or lab.",
+        )
+
+    title = booking.title.strip()
+    if not title:
+        raise HTTPException(
+            status_code=400,
+            detail="Event title cannot be empty.",
         )
 
     check_time_range(booking.start_time, booking.end_time)
@@ -161,7 +204,10 @@ def create_booking(booking: BookingRequest):
             ).fetchone()
 
             if room is None:
-                raise HTTPException(status_code=404, detail="Room not found.")
+                raise HTTPException(
+                    status_code=404,
+                    detail="Room not found.",
+                )
 
             conflict = find_conflict(
                 connection,
@@ -171,34 +217,36 @@ def create_booking(booking: BookingRequest):
             )
 
             if conflict:
-                message = "Room is already reserved during that time."
-                if booking.booking_type == "exam":
-                    message += (
-                        " Exam priority requires an administrator to resolve "
-                        "the conflict; no existing booking was overwritten."
-                    )
-                raise HTTPException(status_code=409, detail=message)
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "This room already has a pending or approved "
+                        "booking during the selected time. Choose another "
+                        "room or a different time."
+                    ),
+                )
 
             cursor = connection.execute(
                 """
                 INSERT INTO bookings
                     (room_id, title, start_time, end_time,
-                     booking_type, status)
-                VALUES (?, ?, ?, ?, ?, 'pending')
+                     booking_type, status, requested_by)
+                VALUES (?, ?, ?, ?, ?, 'pending', ?)
                 """,
                 (
                     booking.room_id,
-                    booking.title.strip(),
+                    title,
                     booking.start_time.isoformat(),
                     booking.end_time.isoformat(),
-                    booking.booking_type,
+                    booking_type,
+                    booking.requested_by.strip() or "Campus Member",
                 ),
             )
 
             row = connection.execute(
                 """
                 SELECT id, room_id, title, start_time, end_time,
-                       booking_type, status, submitted_at
+                       booking_type, status, submitted_at, requested_by
                 FROM bookings
                 WHERE id = ?
                 """,
@@ -219,10 +267,12 @@ def update_booking_status(
     booking_id: int,
     update: BookingStatusUpdate,
 ):
-    if update.status not in ("approved", "rejected"):
+    status = update.status.strip().lower()
+
+    if status not in ("approved", "rejected"):
         raise HTTPException(
             status_code=400,
-            detail="Status must be 'approved' or 'rejected'.",
+            detail="Status must be approved or rejected.",
         )
 
     try:
@@ -246,7 +296,7 @@ def update_booking_status(
                     detail="Only pending bookings can be reviewed.",
                 )
 
-            if update.status == "approved":
+            if status == "approved":
                 conflict = find_conflict(
                     connection,
                     booking["room_id"],
@@ -259,20 +309,21 @@ def update_booking_status(
                     raise HTTPException(
                         status_code=409,
                         detail=(
-                            "Cannot approve: another pending or approved "
-                            "booking overlaps."
+                            "Cannot approve this request because another "
+                            "pending or approved booking overlaps. Resolve "
+                            "the other request first."
                         ),
                     )
 
             connection.execute(
                 "UPDATE bookings SET status = ? WHERE id = ?",
-                (update.status, booking_id),
+                (status, booking_id),
             )
 
             updated = connection.execute(
                 """
                 SELECT id, room_id, title, start_time, end_time,
-                       booking_type, status, submitted_at
+                       booking_type, status, submitted_at, requested_by
                 FROM bookings
                 WHERE id = ?
                 """,
@@ -310,7 +361,7 @@ def check_availability(
     }
 
     with get_connection() as connection:
-        rooms = connection.execute(
+        room_rows = connection.execute(
             """
             SELECT id, name, capacity, equipment
             FROM rooms
@@ -322,12 +373,21 @@ def check_availability(
 
         available_rooms = []
 
-        for room in rooms:
-            room_equipment = {
-                item.strip().lower()
-                for item in room["equipment"].split(",")
-                if item.strip()
-            }
+        for room in room_rows:
+            raw_equipment = room["equipment"] or ""
+
+            if isinstance(raw_equipment, str):
+                room_equipment = {
+                    item.strip().lower()
+                    for item in raw_equipment.split(",")
+                    if item.strip()
+                }
+            else:
+                room_equipment = {
+                    str(item).strip().lower()
+                    for item in raw_equipment
+                    if str(item).strip()
+                }
 
             if not required_equipment.issubset(room_equipment):
                 continue

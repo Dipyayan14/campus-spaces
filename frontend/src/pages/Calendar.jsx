@@ -1,858 +1,1006 @@
-// src/pages/Calendar.jsx
-// Pixel-accurate implementation matching the Stitch Campus Spaces Calendar design.
-// Includes custom view switcher, date range controls, room filter, color legend,
-// FullCalendar v7 integration with custom event cards, Today's Occupancy sidebar widget,
-// and real-time Pending Requests queue.
-
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, {
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+} from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import FullCalendar from "@fullcalendar/react";
-import dayGridPlugin from "@fullcalendar/react/daygrid";
-import timeGridPlugin from "@fullcalendar/react/timegrid";
-import interactionPlugin from "@fullcalendar/react/interaction";
-import classicThemePlugin from "@fullcalendar/react/themes/classic";
-
-import "@fullcalendar/react/skeleton.css";
-import "@fullcalendar/react/themes/classic/theme.css";
-import "@fullcalendar/react/themes/classic/palette.css";
-
 import { getRooms, getBookings } from "../api";
 
-// Visual token mapping matching Stitch design specs exactly
+const ADMIN_ROLES = ["venue_admin", "super_admin"];
+
 const TYPE_SPECS = {
   exam: {
-    label: "Exam (Strict / Priority 1)",
-    shortLabel: "EXAM",
-    priorityBadge: "PRIORITY 1",
+    label: "Exam",
     bg: "#FEF2F2",
     border: "#DC2626",
     text: "#991B1B",
-    tagBg: "#DC2626",
-    tagText: "#FFFFFF",
-    legendPill: "bg-[#FEF2F2] border-[#FEE2E2] text-[#DC2626]",
-    dot: "bg-[#DC2626]",
   },
   class: {
-    label: "Class / Lecture (Priority 2)",
-    shortLabel: "CLASS",
+    label: "Class / Lecture",
     bg: "#EFF6FF",
     border: "#2563EB",
     text: "#1E40AF",
-    tagBg: "rgba(255, 255, 255, 0.7)",
-    tagText: "#2563EB",
-    legendPill: "bg-[#EFF6FF] border-[#DBEAFE] text-[#2563EB]",
-    dot: "bg-[#2563EB]",
   },
   lab: {
-    label: "Lab Session (Priority 3)",
-    shortLabel: "LAB",
+    label: "Lab Session",
     bg: "#ECFDF5",
     border: "#059669",
     text: "#065F46",
-    tagBg: "#059669",
-    tagText: "#FFFFFF",
-    legendPill: "bg-[#ECFDF5] border-[#D1FAE5] text-[#059669]",
-    dot: "bg-[#059669]",
   },
   event: {
-    label: "Club / Event (Priority 4)",
-    shortLabel: "EVENT",
+    label: "Club / Event",
     bg: "#FFF7ED",
-    border: "#EA580C",
+    border: "#EA5800",
     text: "#9A3412",
-    tagBg: "#EA580C",
-    tagText: "#FFFFFF",
-    legendPill: "bg-[#FFF7ED] border-[#FFEDD5] text-[#EA580C]",
-    dot: "bg-[#EA580C]",
   },
 };
+
+function getCurrentUserRole() {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      const value = localStorage.getItem(key);
+      if (!value) continue;
+
+      try {
+        const parsed = JSON.parse(value);
+        const role = parsed?.role || parsed?.user?.role;
+        if (typeof role === "string") return role.toLowerCase();
+      } catch {
+        // Ignore unrelated storage values.
+      }
+    }
+  } catch {
+    // Storage may be unavailable.
+  }
+
+  return null;
+}
+
+function formatTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Time unavailable";
+
+  return date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Date unavailable";
+
+  return date.toLocaleDateString([], {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function getPeriodRange(period, referenceDate = new Date()) {
+  const current = new Date(referenceDate);
+  let start = new Date(
+    current.getFullYear(),
+    current.getMonth(),
+    current.getDate()
+  );
+  let end = new Date(start);
+
+  if (period === "day") {
+    end.setDate(end.getDate() + 1);
+  } else if (period === "week") {
+    const offset = start.getDay() === 0 ? -6 : 1 - start.getDay();
+    start.setDate(start.getDate() + offset);
+    end = new Date(start);
+    end.setDate(end.getDate() + 7);
+  } else {
+    start = new Date(current.getFullYear(), current.getMonth(), 1);
+    end = new Date(current.getFullYear(), current.getMonth() + 1, 1);
+  }
+
+  return { start, end };
+}
+
+function Detail({ label, children }) {
+  return (
+    <div className="flex items-start justify-between gap-4 text-sm">
+      <span className="text-slate-500 shrink-0">{label}</span>
+      <span className="text-slate-800 text-right break-words">
+        {children}
+      </span>
+    </div>
+  );
+}
 
 export default function Calendar() {
   const navigate = useNavigate();
   const location = useLocation();
-  const alertMessage = location.state?.error;
 
-  const calendarRef = useRef(null);
+  const canManageApprovals = ADMIN_ROLES.includes(getCurrentUserRole());
 
   const [rooms, setRooms] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  // Filter controls
+  const [error, setError] = useState("");
   const [selectedRoom, setSelectedRoom] = useState("all");
   const [includePending, setIncludePending] = useState(true);
-  const [activeView, setActiveView] = useState("timeGridWeek");
-  const [currentDateTitle, setCurrentDateTitle] = useState("Nov 02 – Nov 08, 2026");
+  const [scheduleView, setScheduleView] = useState("week");
+  const [referenceDate, setReferenceDate] = useState(new Date());
+  const [selectedBooking, setSelectedBooking] = useState(null);
+  const [occupancyPeriod, setOccupancyPeriod] = useState("today");
+  const [lastUpdated, setLastUpdated] = useState(null);
 
-  // Event modal state
-  const [selectedEvent, setSelectedEvent] = useState(null);
+  const showPending = canManageApprovals && includePending;
 
-  // Load rooms and bookings through centralized api.js service
-  useEffect(() => {
-    let isMounted = true;
-    async function loadData() {
-      setLoading(true);
-      setError(null);
-      try {
-        const [roomsData, bookingsData] = await Promise.all([
-          getRooms(),
-          getBookings(),
-        ]);
-        if (isMounted) {
-          setRooms(roomsData);
-          setBookings(bookingsData);
-        }
-      } catch (err) {
-        if (isMounted) {
-          setError(err.message || "Failed to load campus schedule. Please retry.");
-        }
-      } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
-      }
+  const refreshData = useCallback(async (showLoader = false) => {
+    if (showLoader) setLoading(true);
+
+    try {
+      const [roomData, bookingData] = await Promise.all([
+        getRooms(),
+        getBookings(),
+      ]);
+
+      setRooms(Array.isArray(roomData) ? roomData : []);
+      setBookings(Array.isArray(bookingData) ? bookingData : []);
+      setError("");
+      setLastUpdated(new Date());
+    } catch (err) {
+      setError(
+        err?.message ||
+          "Could not load bookings. Check that the backend is running."
+      );
+    } finally {
+      if (showLoader) setLoading(false);
     }
-    loadData();
-    return () => {
-      isMounted = false;
-    };
   }, []);
 
-  // Sync toolbar title when view changes
-  const updateTitleFromCalendar = () => {
-    if (calendarRef.current) {
-      const api = calendarRef.current.getApi();
-      setCurrentDateTitle(api.view.title);
-    }
+  useEffect(() => {
+    let mounted = true;
+
+    const load = async () => {
+      if (mounted) await refreshData(true);
+    };
+
+    load();
+
+    const timer = window.setInterval(() => {
+      if (mounted) refreshData(false);
+    }, 5000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, [refreshData]);
+
+  const moveDate = (direction) => {
+    setReferenceDate((previous) => {
+      const next = new Date(previous);
+
+      if (direction === "today") return new Date();
+
+      if (scheduleView === "day") {
+        next.setDate(next.getDate() + direction);
+      } else if (scheduleView === "week") {
+        next.setDate(next.getDate() + direction * 7);
+      } else {
+        next.setMonth(next.getMonth() + direction);
+      }
+
+      return next;
+    });
   };
 
-  // View switch handlers
-  const handleViewChange = (viewName) => {
-    setActiveView(viewName);
-    if (calendarRef.current) {
-      const api = calendarRef.current.getApi();
-      api.changeView(viewName);
-      updateTitleFromCalendar();
-    }
-  };
+  const visibleBookings = useMemo(() => {
+    const { start, end } = getPeriodRange(scheduleView, referenceDate);
 
-  const handlePrev = () => {
-    if (calendarRef.current) {
-      const api = calendarRef.current.getApi();
-      api.prev();
-      updateTitleFromCalendar();
-    }
-  };
-
-  const handleNext = () => {
-    if (calendarRef.current) {
-      const api = calendarRef.current.getApi();
-      api.next();
-      updateTitleFromCalendar();
-    }
-  };
-
-  const handleToday = () => {
-    if (calendarRef.current) {
-      const api = calendarRef.current.getApi();
-      api.today();
-      updateTitleFromCalendar();
-    }
-  };
-
-  // Filter bookings for calendar display
-  const calendarEvents = useMemo(() => {
     return bookings
-      .filter((b) => b.status !== "rejected") // Rejected bookings are hidden
-      .filter((b) => (includePending ? true : b.status === "approved"))
-      .filter((b) =>
-        selectedRoom === "all" ? true : String(b.roomId) === String(selectedRoom)
+      .filter((booking) => booking.status !== "rejected")
+      .filter((booking) =>
+        canManageApprovals
+          ? showPending || booking.status === "approved"
+          : booking.status === "approved"
       )
-      .map((b) => {
-        const room = rooms.find((r) => String(r.id) === String(b.roomId));
-        const type = b.type || "event";
-        const isPending = b.status === "pending";
+      .filter((booking) =>
+        selectedRoom === "all"
+          ? true
+          : String(booking.roomId) === String(selectedRoom)
+      )
+      .filter((booking) => {
+        if (!booking.start || !booking.end) return false;
+
+        const bookingStart = new Date(booking.start);
+        const bookingEnd = new Date(booking.end);
+
+        return (
+          !Number.isNaN(bookingStart.getTime()) &&
+          !Number.isNaN(bookingEnd.getTime()) &&
+          bookingStart < end &&
+          bookingEnd > start
+        );
+      })
+      .map((booking) => {
+        const room = rooms.find(
+          (item) => String(item.id) === String(booking.roomId)
+        );
+
+        const type = String(booking.type || "event").toLowerCase();
         const spec = TYPE_SPECS[type] || TYPE_SPECS.event;
 
         return {
-          id: String(b.id),
-          title: b.title,
-          start: b.start,
-          end: b.end,
-          backgroundColor: isPending ? "#FFFFFF" : spec.bg,
-          borderColor: isPending ? "#94A3B8" : spec.border,
-          textColor: spec.text,
-          classNames: isPending ? ["fc-event-pending"] : [],
-          extendedProps: {
-            roomId: b.roomId,
-            roomName: room ? room.name : `Room ${b.roomId}`,
-            roomCapacity: room?.capacity,
-            roomEquipment: room?.equipment || [],
-            type: b.type,
-            status: b.status,
-            requestedBy: b.requestedBy || "Campus Member",
-          },
+          ...booking,
+          type,
+          typeLabel: spec.label,
+          colorSpec: spec,
+          roomName: room?.name || `Room ${booking.roomId ?? "unknown"}`,
+          roomCapacity: room?.capacity,
+          roomEquipment: room?.equipment || [],
+          requestedBy: booking.requestedBy || "Campus Member",
         };
+      })
+      .sort((a, b) => {
+        const dateDifference =
+          new Date(a.start).getTime() - new Date(b.start).getTime();
+
+        if (dateDifference !== 0) return dateDifference;
+
+        return String(a.title || "").localeCompare(String(b.title || ""));
       });
-  }, [bookings, rooms, selectedRoom, includePending]);
+  }, [
+    bookings,
+    rooms,
+    selectedRoom,
+    showPending,
+    canManageApprovals,
+    scheduleView,
+    referenceDate,
+  ]);
 
-  // Custom FullCalendar Event Block Layout (Stitch exact layout)
-  const renderEventContent = (eventInfo) => {
-    const { event } = eventInfo;
-    const { roomName, type, status, requestedBy, roomCapacity } = event.extendedProps;
-    const isPending = status === "pending";
-    const spec = TYPE_SPECS[type] || TYPE_SPECS.event;
+  const groupedBookings = useMemo(() => {
+    const groups = new Map();
 
-    // Format start/end time
-    const startObj = event.start;
-    const endObj = event.end;
-    const timeStr = startObj
-      ? `${startObj.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })} - ${
-          endObj ? endObj.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }) : ""
-        }`
-      : "";
+    visibleBookings.forEach((booking) => {
+      const key = new Date(booking.start).toLocaleDateString([], {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
 
-    if (isPending) {
-      return (
-        <div className="w-full h-full p-2 border-l-4 border-dashed border-[#94A3B8] bg-white rounded-md flex flex-col justify-between overflow-hidden cursor-pointer select-none leading-tight">
-          <div>
-            <div className="flex items-center justify-between gap-1">
-              <span className="font-bold text-[11px] text-slate-800 truncate">
-                {event.title}
-              </span>
-              <span className="text-[9px] font-bold text-amber-700 bg-amber-50 px-1 py-0.5 rounded border border-amber-200">
-                [PENDING]
-              </span>
-            </div>
-            <span className="text-[10px] text-slate-500 block truncate mt-0.5">
-              {roomName}
-            </span>
-          </div>
-          <span className="text-[9px] text-slate-400 font-mono truncate">{timeStr}</span>
-        </div>
-      );
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(booking);
+    });
+
+    return Array.from(groups.entries());
+  }, [visibleBookings]);
+
+  const pendingRequests = useMemo(
+    () =>
+      canManageApprovals
+        ? bookings.filter((booking) => booking.status === "pending")
+        : [],
+    [bookings, canManageApprovals]
+  );
+
+  const occupancy = useMemo(() => {
+    const { start, end } = getPeriodRange(occupancyPeriod);
+    const byRoom = new Map();
+
+    rooms.forEach((room) => byRoom.set(String(room.id), []));
+
+    bookings
+      .filter((booking) => booking.status === "approved")
+      .forEach((booking) => {
+        const bookingStart = new Date(booking.start);
+        const bookingEnd = new Date(booking.end);
+
+        if (
+          Number.isNaN(bookingStart.getTime()) ||
+          Number.isNaN(bookingEnd.getTime()) ||
+          bookingStart >= end ||
+          bookingEnd <= start
+        ) {
+          return;
+        }
+
+        const key = String(booking.roomId);
+        if (!byRoom.has(key)) byRoom.set(key, []);
+
+        byRoom.get(key).push({
+          ...booking,
+          start: bookingStart,
+          end: bookingEnd,
+        });
+      });
+
+    for (const list of byRoom.values()) {
+      list.sort((a, b) => a.start - b.start);
     }
 
-    return (
-      <div
-        className="w-full h-full p-2 border-l-4 rounded-md flex flex-col justify-between overflow-hidden cursor-pointer select-none leading-tight"
-        style={{
-          borderLeftColor: spec.border,
-          backgroundColor: spec.bg,
-          color: spec.text,
-        }}
-      >
-        <div>
-          <div className="flex items-center justify-between gap-1">
-            <span className="font-bold text-[11px] truncate">{event.title}</span>
-            <span
-              className="text-[9px] font-semibold px-1 py-0.2 rounded shrink-0 shadow-2xs"
-              style={{ backgroundColor: spec.tagBg, color: spec.tagText }}
-            >
-              {roomName.length > 10 ? roomName.slice(0, 10) + "..." : roomName}
-            </span>
-          </div>
+    const occupiedRooms = [...byRoom.values()].filter(
+      (list) => list.length > 0
+    ).length;
 
-          <span className="text-[10px] block truncate opacity-90 mt-0.5">
-            {requestedBy} • {timeStr}
-          </span>
-        </div>
-
-        {/* Bottom metadata */}
-        <div className="flex items-center justify-between text-[9px] opacity-85 mt-1">
-          <span className="flex items-center gap-1 font-medium">
-            <span className="material-symbols-outlined text-[11px]">groups</span>
-            <span>Cap: {roomCapacity || "—"}</span>
-          </span>
-          {type === "exam" && (
-            <span className="font-bold px-1 bg-red-600 text-white rounded text-[8px]">
-              LOCKED
-            </span>
-          )}
-        </div>
-      </div>
+    const totalBookings = [...byRoom.values()].reduce(
+      (sum, list) => sum + list.length,
+      0
     );
-  };
 
-  // Occupancy metrics calculations for the right sidebar
-  const pendingRequests = useMemo(() => {
-    return bookings.filter((b) => b.status === "pending");
-  }, [bookings]);
+    return {
+      byRoom,
+      occupiedRooms,
+      totalBookings,
+      percentage: rooms.length
+        ? Math.round((occupiedRooms / rooms.length) * 100)
+        : 0,
+      rangeLabel:
+        occupancyPeriod === "today"
+          ? "Today"
+          : occupancyPeriod === "week"
+            ? "This week"
+            : start.toLocaleDateString([], {
+                month: "long",
+                year: "numeric",
+              }),
+    };
+  }, [rooms, bookings, occupancyPeriod]);
 
-  const occupancyRate = useMemo(() => {
-    if (!rooms.length) return 78;
-    const approvedCount = bookings.filter((b) => b.status === "approved").length;
-    const totalSlots = rooms.length * 4;
-    return Math.min(Math.round((approvedCount / totalSlots) * 100) + 40, 92);
-  }, [rooms, bookings]);
+  const dateHeading = useMemo(() => {
+    if (scheduleView === "day") return formatDate(referenceDate);
+
+    if (scheduleView === "month") {
+      return referenceDate.toLocaleDateString([], {
+        month: "long",
+        year: "numeric",
+      });
+    }
+
+    const { start, end } = getPeriodRange("week", referenceDate);
+    const lastDay = new Date(end);
+    lastDay.setDate(lastDay.getDate() - 1);
+
+    return `${start.toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+    })} – ${lastDay.toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    })}`;
+  }, [scheduleView, referenceDate]);
 
   return (
-    <div className="w-full max-w-[1440px] mx-auto px-4 sm:px-8 py-5 flex flex-col gap-4 font-['Inter',sans-serif]">
-      {/* Role restriction alert flash banner */}
-      {alertMessage && (
-        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 flex items-center space-x-3 text-xs font-medium">
-          <span className="material-symbols-outlined text-amber-600">warning</span>
-          <span>{alertMessage}</span>
+    <div className="w-full max-w-[1600px] mx-auto px-3 sm:px-6 py-5 flex flex-col gap-4">
+      <style>{`
+        .spacesync-booking-card {
+          transition: box-shadow 150ms ease, transform 150ms ease;
+        }
+        .spacesync-booking-card:hover {
+          box-shadow: 0 5px 18px rgba(15, 23, 42, 0.10);
+          transform: translateY(-1px);
+        }
+      `}</style>
+
+      {location.state?.error && (
+        <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-sm">
+          {location.state.error}
         </div>
       )}
 
-      {/* PAGE HEADER BAR: Title, Live Status, and Toolbar Controls */}
-      <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-2xs">
-        {/* Title & Live Status */}
-        <div className="flex items-center gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl sm:text-2xl font-bold text-[#0B1C30] font-['Plus_Jakarta_Sans',sans-serif] tracking-tight">
-                Campus Reservation Schedule
-              </h1>
-              <span className="bg-[#DAE2FD] text-[#131B2E] text-[11px] font-semibold px-2.5 py-0.5 rounded-full">
-                Academic Term 1
-              </span>
-            </div>
-            <p className="text-slate-500 text-xs mt-0.5">
-              Real-time scheduling grid, room concurrency and instructional reservations.
-            </p>
-          </div>
-        </div>
-
-        {/* View Switcher & Date Controls */}
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* Day / Week / Month Segment Button */}
-          <div className="bg-[#EFF4FF] border border-slate-200/80 p-1 rounded-lg flex items-center gap-0.5">
-            <button
-              type="button"
-              onClick={() => handleViewChange("timeGridDay")}
-              className={`px-3 py-1 rounded text-xs font-semibold transition cursor-pointer ${
-                activeView === "timeGridDay"
-                  ? "bg-white text-[#3525CD] font-bold shadow-xs"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              Day
-            </button>
-            <button
-              type="button"
-              onClick={() => handleViewChange("timeGridWeek")}
-              className={`px-3 py-1 rounded text-xs font-semibold transition cursor-pointer ${
-                activeView === "timeGridWeek"
-                  ? "bg-white text-[#3525CD] font-bold shadow-xs"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              Week
-            </button>
-            <button
-              type="button"
-              onClick={() => handleViewChange("dayGridMonth")}
-              className={`px-3 py-1 rounded text-xs font-semibold transition cursor-pointer ${
-                activeView === "dayGridMonth"
-                  ? "bg-white text-[#3525CD] font-bold shadow-xs"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              Month
-            </button>
-          </div>
-
-          {/* Date Range Navigation */}
-          <div className="flex items-center gap-1 bg-[#EFF4FF] border border-slate-200/80 rounded-lg p-1">
-            <button
-              type="button"
-              onClick={handlePrev}
-              title="Previous Range"
-              className="p-1 rounded text-slate-600 hover:text-slate-900 hover:bg-white transition cursor-pointer"
-            >
-              <span className="material-symbols-outlined text-[18px]">
-                chevron_left
-              </span>
-            </button>
-            <div className="flex items-center gap-1.5 px-2">
-              <span className="material-symbols-outlined text-[#3525CD] text-[16px]">
-                calendar_today
-              </span>
-              <span className="text-xs font-semibold text-slate-800">
-                {currentDateTitle}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={handleNext}
-              title="Next Range"
-              className="p-1 rounded text-slate-600 hover:text-slate-900 hover:bg-white transition cursor-pointer"
-            >
-              <span className="material-symbols-outlined text-[18px]">
-                chevron_right
-              </span>
-            </button>
-          </div>
-
-          {/* Today Button */}
+      {error && (
+        <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
+          {error}
           <button
             type="button"
-            onClick={handleToday}
-            className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition cursor-pointer shadow-2xs"
+            onClick={() => refreshData(true)}
+            className="ml-3 font-bold underline"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      <section className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-sm">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-xl sm:text-2xl font-bold text-[#0B1C30]">
+              Campus Reservation Schedule
+            </h1>
+            <span className="bg-indigo-100 text-indigo-900 text-xs font-semibold px-2.5 py-1 rounded-full">
+              SpaceSync AI
+            </span>
+          </div>
+
+          <p className="text-slate-500 text-xs mt-1">
+            Every reservation appears on its own row for easier reading.
+          </p>
+
+          <p className="text-slate-400 text-xs mt-1">
+            {lastUpdated
+              ? `Last updated ${lastUpdated.toLocaleTimeString()} · Auto-refresh every 5 seconds`
+              : "Loading schedule…"}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {[
+            ["day", "Day"],
+            ["week", "Week"],
+            ["month", "Month"],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setScheduleView(value)}
+              className={`px-3 py-2 rounded-lg text-xs font-semibold ${
+                scheduleView === value
+                  ? "bg-indigo-600 text-white"
+                  : "bg-slate-100 text-slate-700"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+
+          <button
+            type="button"
+            onClick={() => moveDate(-1)}
+            className="px-3 py-2 border rounded-lg text-sm"
+            aria-label="Previous period"
+          >
+            ‹
+          </button>
+
+          <span className="text-xs font-bold text-slate-800 text-center min-w-32">
+            {dateHeading}
+          </span>
+
+          <button
+            type="button"
+            onClick={() => moveDate(1)}
+            className="px-3 py-2 border rounded-lg text-sm"
+            aria-label="Next period"
+          >
+            ›
+          </button>
+
+          <button
+            type="button"
+            onClick={() => moveDate("today")}
+            className="px-3 py-2 border rounded-lg text-xs font-semibold"
           >
             Today
           </button>
         </div>
-      </div>
+      </section>
 
-      {/* FILTERS & ACTION TOOLBAR */}
-      <div className="bg-white border border-slate-200 rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
-        <div className="flex flex-wrap items-center gap-4">
-          {/* Room Filter Dropdown */}
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-slate-500">Room:</span>
-            <select
-              value={selectedRoom}
-              onChange={(e) => setSelectedRoom(e.target.value)}
-              className="bg-white border border-slate-300 text-slate-800 text-xs font-semibold rounded-lg pl-2.5 pr-7 py-1.5 focus:ring-1 focus:ring-[#4F46E5] focus:border-[#4F46E5] cursor-pointer"
-            >
-              <option value="all">All Spaces</option>
-              {rooms.map((room) => (
-                <option key={room.id} value={room.id}>
-                  {room.name} (Cap. {room.capacity})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Facility Filter */}
-          <div className="hidden sm:flex items-center gap-2">
-            <span className="text-xs font-medium text-slate-500">Facility:</span>
-            <select className="bg-white border border-slate-300 text-slate-800 text-xs font-semibold rounded-lg pl-2.5 pr-7 py-1.5 focus:ring-1 focus:ring-[#4F46E5] focus:border-[#4F46E5] cursor-pointer">
-              <option>All Buildings & Wings</option>
-              <option>Science Complex</option>
-              <option>Main Academic Quad</option>
-              <option>Engineering Block</option>
-            </select>
-          </div>
-
-          {/* Include Pending Toggle */}
-          <label className="flex items-center gap-2 cursor-pointer select-none border-l border-slate-200 pl-3">
-            <input
-              type="checkbox"
-              checked={includePending}
-              onChange={(e) => setIncludePending(e.target.checked)}
-              className="rounded border-slate-300 text-[#4F46E5] focus:ring-[#4F46E5] w-3.5 h-3.5 cursor-pointer"
-            />
-            <span className="text-xs text-slate-600 font-medium">
-              Include Pending Approvals
-            </span>
+      <section className="bg-white border border-slate-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <label
+            htmlFor="calendar-room"
+            className="text-xs font-semibold text-slate-600"
+          >
+            Filter by room
           </label>
-        </div>
 
-        {/* New Reservation Action */}
-        <button
-          type="button"
-          onClick={() => navigate("/book")}
-          className="bg-[#4F46E5] hover:bg-[#3525CD] text-white text-xs font-bold px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 active:scale-[0.98] transition shadow-2xs cursor-pointer"
-        >
-          <span className="material-symbols-outlined text-[16px]">add_circle</span>
-          <span>+ New Reservation</span>
-        </button>
-      </div>
+          <select
+            id="calendar-room"
+            value={selectedRoom}
+            onChange={(event) => setSelectedRoom(event.target.value)}
+            className="bg-white border border-slate-300 text-slate-800 text-xs font-semibold rounded-lg px-3 py-2"
+          >
+            <option value="all">All Spaces</option>
+            {rooms.map((room) => (
+              <option key={room.id} value={room.id}>
+                {room.name} · Capacity {room.capacity}
+              </option>
+            ))}
+          </select>
 
-      {/* COLOR LEGEND BAR */}
-      <div className="bg-white border border-slate-200 rounded-xl px-4 py-2 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
-        <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-          <span className="material-symbols-outlined text-[15px] text-slate-400">
-            palette
-          </span>
-          <span>Reservation Classification:</span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Exam Pill */}
-          <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#FEF2F2] border border-[#FEE2E2] text-[#DC2626] text-[11px] font-semibold">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#DC2626]" />
-            <span>Exam (Strict / Priority 1)</span>
-          </div>
-
-          {/* Class Pill */}
-          <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#EFF6FF] border border-[#DBEAFE] text-[#2563EB] text-[11px] font-semibold">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#2563EB]" />
-            <span>Class / Lecture (Priority 2)</span>
-          </div>
-
-          {/* Lab Pill */}
-          <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#ECFDF5] border border-[#D1FAE5] text-[#059669] text-[11px] font-semibold">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#059669]" />
-            <span>Lab Session (Priority 3)</span>
-          </div>
-
-          {/* Event Pill */}
-          <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#FFF7ED] border border-[#FFEDD5] text-[#EA580C] text-[11px] font-semibold">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#EA580C]" />
-            <span>Club / Event (Priority 4)</span>
-          </div>
-
-          {/* Pending Pill */}
-          <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white border border-dashed border-[#777587] text-[#464555] text-[11px] font-medium">
-            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 border border-slate-300" />
-            <span>Pending Review (Lighter shade)</span>
-          </div>
-        </div>
-      </div>
-
-      {/* MAIN TWO-COLUMN SCHEDULE GRID & OCCUPANCY METRICS */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
-        {/* Left Side: Schedule Calendar (9 Columns on XL) */}
-        <div className="xl:col-span-9 bg-white border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
-          {loading ? (
-            <div className="py-28 flex flex-col items-center justify-center text-center space-y-2">
-              <div className="w-9 h-9 border-3 border-[#4F46E5] border-t-transparent rounded-full animate-spin" />
-              <div className="text-xs font-semibold text-slate-700">
-                Loading campus schedule...
-              </div>
-            </div>
-          ) : error ? (
-            <div className="py-20 flex flex-col items-center justify-center text-center space-y-2">
-              <span className="material-symbols-outlined text-red-500 text-3xl">
-                error
-              </span>
-              <div className="text-sm font-semibold text-slate-800">
-                Unable to load reservations
-              </div>
-              <p className="text-xs text-red-600 max-w-sm">{error}</p>
-              <button
-                type="button"
-                onClick={() => window.location.reload()}
-                className="mt-2 px-3 py-1.5 rounded-lg bg-[#4F46E5] text-white text-xs font-semibold hover:bg-[#3525CD] transition cursor-pointer"
-              >
-                Retry
-              </button>
-            </div>
-          ) : (
-            <div className="overflow-x-auto min-w-[720px] p-2">
-              <FullCalendar
-                ref={calendarRef}
-                plugins={[
-                  dayGridPlugin,
-                  timeGridPlugin,
-                  interactionPlugin,
-                  classicThemePlugin,
-                ]}
-                initialView="timeGridWeek"
-                initialDate="2026-11-02" // Matches existing mockData bookings
-                headerToolbar={false} // Handled by our custom Stitch header toolbar
-                events={calendarEvents}
-                eventContent={renderEventContent}
-                eventClick={(info) => {
-                  setSelectedEvent(info.event);
-                }}
-                datesSet={updateTitleFromCalendar}
-                slotMinTime="08:00:00"
-                slotMaxTime="18:00:00"
-                allDaySlot={false}
-                height="auto"
-                nowIndicator={true}
-                expandRows={true}
+          {canManageApprovals && (
+            <label className="flex items-center gap-2 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={includePending}
+                onChange={(event) => setIncludePending(event.target.checked)}
               />
-            </div>
+              Show pending requests
+            </label>
           )}
         </div>
 
-        {/* Right Side: Occupancy Metrics & Pending Action Queue (3 Columns on XL) */}
-        <div className="xl:col-span-3 flex flex-col gap-4">
-          {/* Today's Occupancy Card */}
-          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-3.5">
-            <div className="flex items-center justify-between">
-              <h3 className="font-['Plus_Jakarta_Sans',sans-serif] font-bold text-sm text-[#0B1C30]">
-                Today's Occupancy
-              </h3>
-              <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Live
-              </span>
+        <button
+          type="button"
+          onClick={() => navigate("/book")}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2.5 rounded-lg"
+        >
+          + New Reservation
+        </button>
+      </section>
+
+      <section className="bg-white border border-slate-200 rounded-xl p-3 flex flex-wrap items-center gap-2 shadow-sm">
+        <span className="text-xs font-semibold text-slate-500 mr-1">
+          Booking types:
+        </span>
+
+        {Object.entries(TYPE_SPECS).map(([type, spec]) => (
+          <span
+            key={type}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold border"
+            style={{
+              color: spec.text,
+              background: spec.bg,
+              borderColor: spec.border,
+            }}
+          >
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{ background: spec.border }}
+            />
+            {spec.label}
+          </span>
+        ))}
+      </section>
+
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+        <section className="xl:col-span-9 min-w-0 bg-white border border-slate-200 rounded-xl shadow-sm p-4 sm:p-5">
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+            <div>
+              <h2 className="font-bold text-lg text-slate-900">
+                Booking Schedule
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">
+                Sorted by date and start time. Simultaneous bookings are
+                displayed on separate rows.
+              </p>
             </div>
 
-            {/* Radial Donut Progress */}
-            <div className="flex items-center gap-3 bg-[#F8F9FF] p-3 rounded-lg border border-slate-100">
-              <div className="relative w-14 h-14 shrink-0 flex items-center justify-center">
-                <svg className="w-14 h-14 transform -rotate-90" viewBox="0 0 36 36">
-                  {/* Track */}
-                  <path
-                    className="text-slate-200 stroke-current"
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                    fill="none"
-                    strokeWidth="3.5"
-                  />
-                  {/* Fill */}
-                  <path
-                    className="text-[#4F46E5] stroke-current"
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                    fill="none"
-                    strokeDasharray={`${occupancyRate}, 100`}
-                    strokeLinecap="round"
-                    strokeWidth="3.5"
-                  />
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-xs font-bold text-slate-800">
-                    {occupancyRate}%
-                  </span>
-                  <span className="text-[7px] text-slate-400 font-bold uppercase">
-                    Active
-                  </span>
-                </div>
-              </div>
-
-              <div className="text-xs">
-                <span className="font-semibold text-slate-800 block">
-                  Campus Concurrency
-                </span>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  {bookings.filter((b) => b.status === "approved").length} active bookings confirmed.
-                </p>
-                <span className="text-[10px] text-emerald-600 font-bold inline-block mt-0.5">
-                  +4% vs last week
-                </span>
-              </div>
-            </div>
-
-            {/* Key Facilities Utilization Breakdown */}
-            <div className="space-y-2.5 pt-1">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                Key Facilities Utilization
-              </span>
-
-              {rooms.map((room, idx) => {
-                const colors = ["#DC2626", "#059669", "#2563EB", "#EA580C"];
-                const barColor = colors[idx % colors.length];
-                const pct = [92, 65, 84, 40][idx % 4] || 70;
-
-                return (
-                  <div key={room.id} className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-semibold text-slate-700 truncate max-w-[150px]">
-                        {room.name}
-                      </span>
-                      <span className="text-[11px] font-bold text-slate-600">
-                        {pct}%
-                      </span>
-                    </div>
-                    <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all duration-300"
-                        style={{ width: `${pct}%`, backgroundColor: barColor }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-[10px] text-slate-400">
-                      <span>Cap: {room.capacity} seats</span>
-                      <span>Scheduled</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
-              <span className="text-slate-500">Facility Maintenance</span>
-              <span className="font-bold text-[#4F46E5] cursor-pointer hover:underline text-[11px]">
-                View Log
-              </span>
-            </div>
+            <span className="text-xs text-slate-500 bg-slate-100 rounded-full px-3 py-1.5">
+              {visibleBookings.length} booking(s)
+            </span>
           </div>
 
-          {/* Pending Requests Queue Card */}
-          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <span className="material-symbols-outlined text-slate-400 text-[18px]">
-                  pending_actions
-                </span>
-                <h3 className="font-['Plus_Jakarta_Sans',sans-serif] font-bold text-sm text-[#0B1C30]">
-                  Pending Requests
-                </h3>
-              </div>
-              <span className="w-5 h-5 rounded-full bg-[#4F46E5] text-white text-[10px] font-bold flex items-center justify-center">
-                {pendingRequests.length}
+          {loading ? (
+            <div className="py-20 text-center text-sm text-slate-500">
+              Loading campus schedule…
+            </div>
+          ) : visibleBookings.length === 0 ? (
+            <div className="py-16 text-center rounded-xl border border-dashed border-slate-300 bg-slate-50">
+              <div className="text-3xl mb-3">📅</div>
+              <h3 className="font-semibold text-slate-800">
+                No bookings for this period
+              </h3>
+              <p className="text-xs text-slate-500 mt-2">
+                Try another date, choose All Spaces, or create a reservation.
+              </p>
+              <button
+                type="button"
+                onClick={() => navigate("/book")}
+                className="mt-4 bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-semibold"
+              >
+                Create a booking
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {groupedBookings.map(([dateLabel, items]) => (
+                <div key={dateLabel}>
+                  <div className="sticky top-0 z-10 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-3">
+                    <h3 className="text-sm font-bold text-slate-800">
+                      {dateLabel}
+                    </h3>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      {items.length} reservation(s)
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    {items.map((booking) => {
+                      const spec =
+                        TYPE_SPECS[booking.type] || TYPE_SPECS.event;
+                      const pending = booking.status === "pending";
+
+                      return (
+                        <button
+                          type="button"
+                          key={booking.id}
+                          onClick={() => setSelectedBooking(booking)}
+                          className="spacesync-booking-card w-full text-left rounded-xl border p-4 sm:p-5"
+                          style={{
+                            background: pending ? "#FFFBEB" : spec.bg,
+                            borderColor: pending ? "#F59E0B" : spec.border,
+                            borderLeftWidth: 5,
+                          }}
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2 mb-2">
+                                <span
+                                  className="text-[10px] uppercase tracking-wide font-bold px-2 py-1 rounded-full"
+                                  style={{
+                                    background: "#FFFFFF",
+                                    color: spec.text,
+                                    border: `1px solid ${spec.border}`,
+                                  }}
+                                >
+                                  {spec.label}
+                                </span>
+
+                                <span
+                                  className="text-[10px] font-bold px-2 py-1 rounded-full"
+                                  style={{
+                                    background: pending ? "#FEF3C7" : "#FFFFFF",
+                                    color: pending ? "#92400E" : "#166534",
+                                    border: `1px solid ${
+                                      pending ? "#F59E0B" : "#86EFAC"
+                                    }`,
+                                  }}
+                                >
+                                  {pending ? "Pending approval" : "Approved"}
+                                </span>
+                              </div>
+
+                              <h3
+                                className="text-base sm:text-lg font-bold break-words"
+                                style={{ color: spec.text }}
+                              >
+                                {booking.title || "Untitled booking"}
+                              </h3>
+
+                              <p className="text-sm font-semibold text-slate-700 mt-2 break-words">
+                                <span className="mr-1">📍</span>
+                                {booking.roomName}
+                              </p>
+                            </div>
+
+                            <div className="sm:min-w-40 sm:text-right">
+                              <p className="text-sm font-bold text-slate-800">
+                                {formatTime(booking.start)}
+                              </p>
+                              <p className="text-xs text-slate-500 mt-1">
+                                to {formatTime(booking.end)}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 mt-4 pt-3 border-t border-slate-200/80">
+                            <p className="text-xs text-slate-600 break-words">
+                              <span className="font-semibold">Booked by:</span>{" "}
+                              {booking.requestedBy}
+                            </p>
+
+                            {booking.roomCapacity != null && (
+                              <p className="text-xs text-slate-600">
+                                <span className="font-semibold">
+                                  Room capacity:
+                                </span>{" "}
+                                {booking.roomCapacity} people
+                              </p>
+                            )}
+
+                            <p className="text-xs text-slate-600">
+                              <span className="font-semibold">Booking ID:</span>{" "}
+                              {booking.id}
+                            </p>
+
+                            <p className="text-xs text-indigo-700 font-semibold">
+                              Click to view full details →
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <aside className="xl:col-span-3 flex flex-col gap-4">
+          <section className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-2 mb-4">
+              <h2 className="font-bold text-sm text-slate-900">
+                Room Occupancy
+              </h2>
+              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full">
+                Live · 5s
               </span>
             </div>
-            <p className="text-[11px] text-slate-500">
-              Reservations awaiting faculty or facilities approval.
+
+            <div className="grid grid-cols-3 gap-1 bg-slate-100 p-1 rounded-lg">
+              {[
+                ["today", "Today"],
+                ["week", "This Week"],
+                ["month", "This Month"],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setOccupancyPeriod(value)}
+                  className={`py-2 rounded-md text-[10px] font-semibold ${
+                    occupancyPeriod === value
+                      ? "bg-white text-indigo-700 shadow-sm"
+                      : "text-slate-500"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <p className="text-[10px] text-slate-500 mt-3">
+              {occupancy.rangeLabel}
             </p>
 
-            <div className="space-y-2 pt-1">
-              {pendingRequests.length === 0 ? (
-                <div className="text-center py-4 text-xs text-slate-400">
-                  No pending requests.
+            <div className="flex items-center gap-3 bg-slate-50 p-3 rounded-lg mt-2">
+              <div
+                className="w-16 h-16 rounded-full flex items-center justify-center shrink-0"
+                style={{
+                  background: `conic-gradient(#4F46E5 ${
+                    occupancy.percentage * 3.6
+                  }deg, #E2E8F0 0deg)`,
+                }}
+              >
+                <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center">
+                  <span className="text-sm font-bold text-slate-800">
+                    {occupancy.percentage}%
+                  </span>
                 </div>
+              </div>
+
+              <div className="text-xs min-w-0">
+                <p className="font-semibold text-slate-800">
+                  Confirmed occupancy
+                </p>
+                <p className="text-slate-500 mt-1">
+                  {occupancy.occupiedRooms} of {rooms.length} rooms have
+                  approved bookings.
+                </p>
+                <p className="text-slate-500 mt-1">
+                  {occupancy.totalBookings} approved booking(s)
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                Room schedule
+              </h3>
+
+              {rooms.length === 0 ? (
+                <p className="text-xs text-slate-400">
+                  No rooms returned by the API.
+                </p>
               ) : (
-                pendingRequests.map((req) => {
-                  const r = rooms.find((rm) => String(rm.id) === String(req.roomId));
+                rooms.map((room) => {
+                  const roomBookings =
+                    occupancy.byRoom.get(String(room.id)) || [];
+
                   return (
                     <div
-                      key={req.id}
-                      className="p-2.5 rounded-lg border border-dashed border-slate-300 bg-[#F8F9FF] text-xs space-y-1.5"
+                      key={room.id}
+                      className="border-b border-slate-100 pb-3 last:border-0"
                     >
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="font-semibold text-slate-800 truncate">
-                          {req.title}
+                      <div className="flex justify-between gap-2">
+                        <span className="text-xs font-semibold text-slate-700">
+                          {room.name}
                         </span>
-                        <span className="text-[10px] font-bold text-[#3525CD] bg-indigo-50 px-1 py-0.5 rounded shrink-0">
-                          {r ? r.name.slice(0, 10) : `Room ${req.roomId}`}
+                        <span className="text-[10px] text-slate-400">
+                          Cap. {room.capacity}
                         </span>
                       </div>
-                      <span className="text-[10px] text-slate-500 block truncate">
-                        {req.start ? req.start.replace("T", " • ") : "Scheduled"}
-                      </span>
-                      <div className="flex items-center gap-2 pt-1">
-                        <button
-                          type="button"
-                          onClick={() => navigate("/approvals")}
-                          className="flex-1 py-1 rounded bg-[#4F46E5] hover:bg-[#3525CD] text-white text-[11px] font-semibold transition cursor-pointer"
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedEvent({
-                              title: req.title,
-                              startStr: req.start,
-                              endStr: req.end,
-                              extendedProps: {
-                                roomId: req.roomId,
-                                roomName: r ? r.name : `Room ${req.roomId}`,
-                                roomCapacity: r?.capacity,
-                                roomEquipment: r?.equipment,
-                                type: req.type,
-                                status: req.status,
-                                requestedBy: req.requestedBy || "Campus Member",
-                              },
-                            });
-                          }}
-                          className="px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-white text-[11px] font-semibold transition cursor-pointer"
-                        >
-                          Review
-                        </button>
-                      </div>
+
+                      {roomBookings.length === 0 ? (
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          No approved bookings in this period
+                        </p>
+                      ) : (
+                        <div className="mt-2 space-y-2">
+                          {roomBookings.map((booking, index) => {
+                            const spec =
+                              TYPE_SPECS[booking.type] || TYPE_SPECS.event;
+
+                            return (
+                              <div
+                                key={`${room.id}-${booking.id ?? index}`}
+                                className="rounded-md p-2"
+                                style={{
+                                  background: spec.bg,
+                                  borderLeft: `3px solid ${spec.border}`,
+                                }}
+                              >
+                                <p
+                                  className="text-[11px] font-semibold break-words"
+                                  style={{ color: spec.text }}
+                                >
+                                  {booking.title}
+                                </p>
+                                <p className="text-[10px] text-slate-600 mt-1">
+                                  {spec.label}
+                                </p>
+                                <p className="text-[10px] text-slate-500 mt-1">
+                                  {formatTime(booking.start)} –{" "}
+                                  {formatTime(booking.end)}
+                                </p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   );
                 })
               )}
             </div>
-          </div>
-        </div>
+
+            <p className="text-[10px] text-slate-400 border-t border-slate-100 pt-3 mt-3">
+              Only approved bookings count toward occupancy.
+            </p>
+          </section>
+
+          {canManageApprovals && (
+            <section className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+              <div className="flex items-center justify-between">
+                <h2 className="font-bold text-sm text-slate-900">
+                  Pending Requests
+                </h2>
+                <span className="w-6 h-6 rounded-full bg-indigo-600 text-white text-xs font-bold flex items-center justify-center">
+                  {pendingRequests.length}
+                </span>
+              </div>
+
+              <p className="text-[11px] text-slate-500 mt-1">
+                Reservations awaiting approval.
+              </p>
+
+              {pendingRequests.length === 0 ? (
+                <p className="text-center py-4 text-xs text-slate-400">
+                  No pending requests.
+                </p>
+              ) : (
+                <div className="space-y-2 mt-3">
+                  {pendingRequests.map((request) => {
+                    const room = rooms.find(
+                      (item) => String(item.id) === String(request.roomId)
+                    );
+                    const spec =
+                      TYPE_SPECS[request.type] || TYPE_SPECS.event;
+
+                    return (
+                      <div
+                        key={request.id}
+                        className="p-3 rounded-lg border border-amber-200 bg-amber-50 space-y-1"
+                      >
+                        <p className="text-xs font-bold text-slate-800">
+                          {request.title}
+                        </p>
+                        <p className="text-[10px] text-slate-600">
+                          Room: {room?.name || `Room ${request.roomId}`}
+                        </p>
+                        <p className="text-[10px] text-slate-600">
+                          {spec.label}
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          {request.requestedBy || "Campus Member"}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => navigate("/approvals")}
+                          className="w-full mt-2 py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold"
+                        >
+                          Review Request
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+        </aside>
       </div>
 
-      {/* EVENT DETAILS POPUP MODAL */}
-      {selectedEvent && (
+      {selectedBooking && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
-          onClick={() => setSelectedEvent(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          onClick={() => setSelectedBooking(null)}
         >
           <div
-            className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4 animate-scaleIn"
-            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 space-y-4"
+            onClick={(event) => event.stopPropagation()}
           >
-            {/* Header */}
             <div className="flex items-start justify-between gap-3">
               <div>
-                <span
-                  className={`inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full mb-1 ${
-                    TYPE_SPECS[selectedEvent.extendedProps.type]?.legendPill ||
-                    "bg-slate-100 text-slate-700"
-                  }`}
-                >
-                  {TYPE_SPECS[selectedEvent.extendedProps.type]?.shortLabel ||
-                    selectedEvent.extendedProps.type}
-                </span>
-                <h3 className="text-base sm:text-lg font-bold text-slate-900 leading-snug">
-                  {selectedEvent.title}
-                </h3>
+                <p className="text-xs font-bold uppercase tracking-wide text-indigo-600">
+                  {selectedBooking.typeLabel}
+                </p>
+                <h2 className="text-xl font-bold text-slate-900 mt-2 break-words">
+                  {selectedBooking.title}
+                </h2>
               </div>
+
               <button
                 type="button"
-                onClick={() => setSelectedEvent(null)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+                onClick={() => setSelectedBooking(null)}
+                className="text-slate-400 hover:text-slate-800 text-xl"
+                aria-label="Close details"
               >
-                ✕
+                ×
               </button>
             </div>
 
-            {/* Details Table */}
-            <div className="space-y-2.5 text-xs border-y border-slate-100 py-3.5">
-              <div className="flex justify-between items-start">
-                <span className="text-slate-400 font-semibold uppercase tracking-wider">
-                  Facility
-                </span>
-                <span className="font-semibold text-slate-800 text-right">
-                  {selectedEvent.extendedProps.roomName}
-                  {selectedEvent.extendedProps.roomCapacity && (
-                    <span className="text-[11px] text-slate-500 font-normal block">
-                      Capacity: {selectedEvent.extendedProps.roomCapacity} seats
-                    </span>
-                  )}
-                </span>
-              </div>
+            <div className="space-y-4 border-y border-slate-100 py-4">
+              <Detail label="Booked room">
+                {selectedBooking.roomName}
+              </Detail>
 
-              <div className="flex justify-between items-start">
-                <span className="text-slate-400 font-semibold uppercase tracking-wider">
-                  Scheduled Time
-                </span>
-                <span className="text-slate-700 font-medium text-right">
-                  {selectedEvent.startStr
-                    ? selectedEvent.startStr.replace("T", " • ")
-                    : "—"}{" "}
-                  {selectedEvent.endStr
-                    ? `– ${selectedEvent.endStr.split("T")[1]}`
-                    : ""}
-                </span>
-              </div>
+              <Detail label="Booking type">
+                {selectedBooking.typeLabel}
+              </Detail>
 
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400 font-semibold uppercase tracking-wider">
-                  Status
-                </span>
-                {selectedEvent.extendedProps.status === "approved" ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold text-[11px]">
-                    ✓ Approved
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-dashed border-amber-300 font-semibold text-[11px]">
-                    ⏳ Pending Review
-                  </span>
-                )}
-              </div>
+              <Detail label="Date">
+                {formatDate(selectedBooking.start)}
+              </Detail>
 
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400 font-semibold uppercase tracking-wider">
-                  Requested By
-                </span>
-                <span className="text-slate-800 font-medium">
-                  {selectedEvent.extendedProps.requestedBy}
-                </span>
-              </div>
+              <Detail label="Start time">
+                {formatTime(selectedBooking.start)}
+              </Detail>
 
-              {selectedEvent.extendedProps.roomEquipment?.length > 0 && (
-                <div className="pt-1">
-                  <span className="text-slate-400 font-semibold uppercase tracking-wider block mb-1">
-                    Room Equipment
-                  </span>
-                  <div className="flex flex-wrap gap-1">
-                    {selectedEvent.extendedProps.roomEquipment.map((eq) => (
+              <Detail label="End time">
+                {formatTime(selectedBooking.end)}
+              </Detail>
+
+              <Detail label="Status">
+                <span
+                  className={
+                    selectedBooking.status === "approved"
+                      ? "text-emerald-700 font-semibold"
+                      : "text-amber-700 font-semibold"
+                  }
+                >
+                  {selectedBooking.status === "approved"
+                    ? "Approved"
+                    : selectedBooking.status === "pending"
+                      ? "Pending Review"
+                      : selectedBooking.status}
+                </span>
+              </Detail>
+
+              <Detail label="Requested by">
+                {selectedBooking.requestedBy}
+              </Detail>
+
+              {selectedBooking.roomCapacity != null && (
+                <Detail label="Room capacity">
+                  {selectedBooking.roomCapacity} people
+                </Detail>
+              )}
+
+              {selectedBooking.roomEquipment?.length > 0 && (
+                <Detail label="Room equipment">
+                  <div className="flex flex-wrap justify-end gap-1">
+                    {selectedBooking.roomEquipment.map((equipment) => (
                       <span
-                        key={eq}
-                        className="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-medium"
+                        key={equipment}
+                        className="px-2 py-1 rounded bg-slate-100 text-slate-600 text-[10px]"
                       >
-                        {eq}
+                        {equipment}
                       </span>
                     ))}
                   </div>
-                </div>
+                </Detail>
               )}
             </div>
 
-            {/* Footer Close */}
             <div className="flex justify-end">
               <button
                 type="button"
-                onClick={() => setSelectedEvent(null)}
-                className="px-4 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition cursor-pointer"
+                onClick={() => setSelectedBooking(null)}
+                className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold"
               >
                 Close
               </button>

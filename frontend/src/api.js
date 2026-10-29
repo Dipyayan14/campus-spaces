@@ -1,7 +1,6 @@
+
 const API_BASE = "http://127.0.0.1:8000";
 
-// Demo accounts used by the prototype.
-// Approval permissions are restricted separately in App.jsx and Navbar.jsx.
 export const demoUsers = [
   { id: "u1", name: "Rahul Sharma", role: "student" },
   { id: "u2", name: "Coding Club Lead", role: "club" },
@@ -9,8 +8,6 @@ export const demoUsers = [
   { id: "u4", name: "Venue Admin", role: "venue_admin" },
   { id: "u5", name: "Super Admin", role: "super_admin" },
   { id: "u6", name: "Exam Cell Officer", role: "exam_cell" },
-
-  // Keep the legacy demo account for existing Insights functionality.
   { id: "u7", name: "Admin Operations", role: "admin" },
 ];
 
@@ -22,17 +19,45 @@ export const TYPE_PRIORITY = {
 };
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
+  let response;
+
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
+    });
+  } catch {
+    throw new Error(
+      "Cannot connect to the backend. Make sure the FastAPI server is running at http://127.0.0.1:8000."
+    );
+  }
 
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `API request failed (${response.status})`);
+    let message = `API request failed (${response.status})`;
+
+    try {
+      const body = await response.json();
+      message =
+        body.detail ||
+        body.message ||
+        message;
+    } catch {
+      try {
+        const bodyText = await response.text();
+        if (bodyText) message = bodyText;
+      } catch {
+        // Keep the status-based error message.
+      }
+    }
+
+    throw new Error(
+      typeof message === "string"
+        ? message
+        : JSON.stringify(message)
+    );
   }
 
   if (response.status === 204) return null;
@@ -41,10 +66,19 @@ async function request(path, options = {}) {
 }
 
 function mapRoom(room) {
+  let equipment = room.equipment ?? [];
+
+  if (typeof equipment === "string") {
+    equipment = equipment
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
   return {
     ...room,
     id: room.id,
-    equipment: Array.isArray(room.equipment) ? room.equipment : [],
+    equipment: Array.isArray(equipment) ? equipment : [],
   };
 }
 
@@ -59,7 +93,9 @@ function mapBooking(booking) {
     end: booking.end_time || booking.end,
     status: booking.status,
     requestedBy:
-      booking.requested_by || booking.requestedBy || "Campus Member",
+      booking.requested_by ||
+      booking.requestedBy ||
+      "Campus Member",
   };
 }
 
@@ -77,11 +113,15 @@ export async function createBooking(data) {
   const booking = await request("/bookings", {
     method: "POST",
     body: JSON.stringify({
-      room_id: data.roomId ?? data.room_id,
-      title: data.title,
+      room_id: Number(data.roomId ?? data.room_id),
+      title: String(data.title || "").trim(),
       start_time: data.start ?? data.start_time,
       end_time: data.end ?? data.end_time,
       booking_type: data.type ?? data.booking_type ?? "event",
+      requested_by:
+        data.requestedBy ||
+        data.requested_by ||
+        "Campus Member",
     }),
   });
 
@@ -130,7 +170,8 @@ export async function suggestRooms({
 
       return equipment.every((item) =>
         room.equipment.some(
-          (value) => value.toLowerCase() === item.toLowerCase()
+          (value) =>
+            value.toLowerCase() === String(item).toLowerCase()
         )
       );
     });
@@ -139,10 +180,9 @@ export async function suggestRooms({
   const params = new URLSearchParams({
     start_time: start,
     end_time: end,
-    min_capacity: String(Number(capacity) || 0),
+    min_capacity: String(Math.max(1, Number(capacity) || 1)),
+    equipment: equipment.join(","),
   });
-
-  equipment.forEach((item) => params.append("equipment", item));
 
   const result = await request(`/availability?${params.toString()}`);
 
